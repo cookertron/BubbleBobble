@@ -1,0 +1,474 @@
+{
+    "_note": "Working-RAM map for the differential sampler and the engine. Located by transition diff and reading routines (M2, refined through M5). Confidence: 'measured' = pinned by a transition diff; 'seen' = observed in code, not yet cross-checked. Bubble Bobble swaps the ACTIVE player's fields into a working struct at $FD80 each turn; per-player saved copies live elsewhere (M5 to map the stride).",
+    "P1_STRUCT_BASE": {
+        "addr": "0xFD80",
+        "width": 1,
+        "note": "seen: active-player working struct; init clears $FD80..+90 ($AA49 fill)"
+    },
+    "P1_X": {
+        "addr": "0xFD83",
+        "width": 1,
+        "note": "measured: +3 X backup (RIGHT raises, LEFT lowers). Authoritative X is +5 (P1_X2 $FD85); see docs/SPEC Entities."
+    },
+    "P1_X2": {
+        "addr": "0xFD85",
+        "width": 1,
+        "note": "measured: tracks P1_X (draw/target X?), settle in M5"
+    },
+    "P1_DIRFRAC": {
+        "addr": "0xFD88",
+        "width": 1,
+        "note": "measured (M5, CORRECTED 2026-09-08): DIRECTION-INPUT bitmask (NOT facing/sub-pixel). low nibble = this frame's held dirs, high = previous; bit0=BLOW (CORRECTED 2026-09-10, M7.4d-ii: the key table's 4th entry -- not 'down'; bit4 = blow held last frame), bit1=up/jump, bit2=right, bit3=left. So $44=right, $88=left, $22=up (both nibbles). Read $AC00 (LD A,(IY+8)); L/R via $ADAA (AND $0C), jump via $AEA1 (BIT 1). True facing = (IY+7) bit0."
+    },
+    "P1_AIR": {
+        "addr": "0xFD89",
+        "width": 1,
+        "note": "measured (M5): player jump-phase / air-state. 0=grounded; 1..32=jump arc phase (indexes arc table $B57D via $AD65-$AD8F, Y+=table[phase-1]); $FF=free-falling (gravity +2/tick $AD5A). Jump starts at $AD08 (phase=1). Phase is CLAMPED to $FF at phase 32 ($AD6E CP $21). The index at $AD84 is UNBOUNDED: phases >=25 (open-air fall) read PAST the 24-entry table into $B595 (3,3,4,4,4,4,4,4 = accelerating +3/+4 fall). (Supersedes the old '15 while jumping' note.)"
+    },
+    "P1_YISH": {
+        "addr": "0xFD82",
+        "width": 1,
+        "note": "measured (M5): +2 = PREVIOUS-TICK Y (the erase/draw-backup position; lags +6 by one tick). Authoritative Y = +6 ($FD86)."
+    },
+    "BANKM_COPY": {
+        "addr": "0x9AE7",
+        "width": 1,
+        "note": "measured: BANKM ($5B5C) copy; OR 1 -> OUT ($7FFD) to page the AY (Q8). $10 in the harness snapshot -> AY path. NOT the AY/beeper discriminator (retracted 2026-09-08: poking it 00/10/20/FF changes nothing) -- just the paging value."
+    },
+    "_hud_note": "score/lives/round not yet located (need level-clear / death / kill events to isolate cleanly); poke the round counter in M4 to find ROUND. Round number '1' is drawn top-left.",
+    "ROUND_CTR": {
+        "addr": "0x8609",
+        "width": 1,
+        "note": "measured (M5): 1-based round counter; 81 rounds (round 81 boss); indexes level data $61A8 and enemy table $7491. (Was mislabelled FRAME_CTR/demo-divider in M2.)"
+    },
+    "BUBBLE_POOL": {
+        "addr": "0xFED8",
+        "width": 1,
+        "note": "measured (M5): blown-bubble object pool, 12 slots stride 10 (2nd at $FEE2); entity-like: +0/1 sprite base $C780 (runtime-built), +5 X, +6 Y, +7 flags ($C1 travel -> $85 rise), +9 ELEMENT marker. +9 (2026-09-09): 0=normal, 2=water, 3=lightning bolt bubble -- set at blow $BDC2 from the player's $FDDA/$FDE4 bit6 (blue-bottle lightning-blow). +7 bit1 = 'emit element on pop' (set by the PLAYER-pop stamp $B9B6, NOT a wall-pop $BEAF); pop $B6D8 -> $B725 (gated by bit1) writes $FFF9=+9 -> spawns the bolt/element. Blow key = the player key table (cursor 7 / keyboard SPACE / etc.)."
+    },
+    "HURRY_TIMER": {
+        "addr": "0x8DBD",
+        "width": 2,
+        "note": "measured (M5): play timer, +1/frame; when it passes HURRY_THRESHOLD the HURRY UP! sequence starts ($9037); +$1F4 (500=10s) later Boris activates ($917C). Zeroed by the hurry-up reset $916D on round-clear/death."
+    },
+    "HURRY_THRESHOLD": {
+        "addr": "0x745C",
+        "width": 2,
+        "note": "measured (M5): hurry-up threshold read at $9037/$917C. PER-ROUND (2026-09-08): set at round setup $735A-$7373: r56=350, r72=30000, r73-81=1000, else 1500. Round 80 hurry suppressed by $9037 CP $50."
+    },
+    "HURRY_TEXT_POS": {
+        "addr": "0x9A04",
+        "width": 2,
+        "note": "measured (M5): 'HURRY UP!' text position; init $FD2C, -=2/frame ($90E9) so the text travels up the screen. String at $9A1C, printer $802E."
+    },
+    "BORIS_STRUCT": {
+        "addr": "0x9250",
+        "width": 1,
+        "note": "measured (M5): Boris/Baron von Blubba struct (NOT an $FD80 slot). +0/1 sprite ($FF50 16x16 masked), +2 drawY +3 drawX +4 anim +5 X +6 Y +7 flags($E0) +9 state. Spawns (24,168); homes on player $FD85/$FD86 8px/step ($91F1). See build/boris.json."
+    },
+    "ELEM_TYPE": {
+        "addr": "0x7E0E",
+        "width": 1,
+        "note": "measured (M5): current elemental type. 0=none,2=WATER,3/4=other fixed elementals,>=5 randomised. Set per-level at $7DD6 from table $7E4B (scanned by round $8609); gated by dispatch $9E75 (==2 -> water tick $A159). See docs/SPEC WATER elemental. RANDOMISED (5-12) is INERT (2026-09-10): $9E75 handles only 2/3/4, and $C068[type-2] points into the ROM font for 5-12 (letter-glyph bubble); popping does nothing."
+    },
+    "ELEM_ROUND_TABLE": {
+        "addr": "0x7E4B",
+        "width": 1,
+        "note": "measured (M5): per-level elemental-assignment table = 4 groups of 1-based round-numbers, each 00-terminated, in order WATER/LIGHTNING/FIRE/RANDOMISED; $7DD6 walks them with class C, type=C+2 (absent->0). Class 3 = randomised type ($7E04=R&7)+5. Full 1-81 map decoded (0 mismatches) -- see docs/SPEC elemental-round-attached section."
+    },
+    "LIGHTNING_BOLT": {
+        "addr": "0xFDEE",
+        "width": 1,
+        "note": "measured (M5): lightning-bolt object (P1; P2=$FDF8). Type-3 elemental. +5 X +6 Y +7 flags(bit7 active, bit0 direction=NOT player facing, bit4 player); sprite $A37D (set $7DFA). Spawn $942E-$945C at bubble pop; mover $9D77 (X +-8/tick opposite to facing); handler $9E85/$9E90. Straight beam at pop row, kills enemies -> corpse. See docs/SPEC LIGHTNING."
+    },
+    "WARP_SKIP_CTR": {
+        "addr": "0xFECD",
+        "width": 1,
+        "note": "measured (M5): umbrella warp skip counter = levels remaining to skip. Set by collect handler $88B1 (CALL $FE85 & 3 -> {3,3,5,7}); main loop $8D12-$8D1C decrements it, force-advancing the level ($97F8) with the $96DF fall-in animation each ~128 frames until 0. Mutation-tested causal. See docs/SPEC Umbrella."
+    },
+    "ARC_TABLE": {
+        "addr": "0xB57D",
+        "width": 1,
+        "note": "measured (M5): player vertical arc table, 24 signed bytes [-4x6,-3x3,-2x3,-1x2,0x4,+1x2,+2x3,+3]; indexed by jump-phase $FD89 at $AD84. Index is UNBOUNDED so phases >24 spill into $B595 (the 8-byte gap before the enemy table $B59D). Enemy variant $B59D, gentler arc $B5BD (bubble-bounce?)."
+    },
+    "BOSS_HP": {
+        "addr": "0x9F62",
+        "width": 1,
+        "note": "measured (M5): boss HP/life. Init 20 ($79A8)/set 42 ($98B2; 42-wins); -1 per lightning-bolt hit ($9F56 DEC(HL), collision $9F30-$9F50 vs boss tile $A8DB/$A839); boss dies at 0 (check $8E4E boss-round -> death $8E55). Death-at-0 CAUSALLY CONFIRMED 2026-09-08: poke $9F62=0 -> $FFEF=$10 at $8E58 -> +100000 to the killer (P1 00045584->00145584)."
+    },
+    "BOSS_X_TILE": {
+        "addr": "0xA8DB",
+        "width": 1,
+        "note": "measured (M5): boss X tile (8px units). Moved by $AA45 (bounce $AA38); reflects in [2,26] (limits BC=$1B02 at $AA17, hi exclusive). Also self-mod draw-column operand at $A8DB used by boss blit $A8C1. Collision target $9F33."
+    },
+    "BOSS_Y_TILE": {
+        "addr": "0xA839",
+        "width": 1,
+        "note": "measured (M5): boss Y tile. Moved by $AA45; reflects in [3,19] (BC=$1403 at $AA23). ==0 triggers spawn ($A9F3->$A84D). Collision target $9F43."
+    },
+    "BOSS_DX": {
+        "addr": "0xAA47",
+        "width": 1,
+        "note": "measured (M5): boss X velocity (signed, +-1). Reflected on wall bounce at $AA43 (NEG). Movement tick $A9ED->body $AA0E->bounce $AA38."
+    },
+    "BOSS_DY": {
+        "addr": "0xAA48",
+        "width": 1,
+        "note": "measured (M5): boss Y velocity (signed, +-1; image default $FF=-1). Bounce $AA43."
+    },
+    "PU_SLOT": {
+        "addr": "0x9603",
+        "width": 2,
+        "note": "measured (M5): the single special power-up slot. byte0=(X&F8)|type (low nibble = dispatch type 0-15), byte1=(Y&F8)|PHASE (bits 0-2 = the 3-bit item-lifetime phase, stepped every 256 frames by $86D9; removed at 4 by $86E4). $872C = present flag. Collect: $87EA AND 15 -> $8828 -> jump table $8839[type]. Level-clear ($8ED4+) does $9604|=3 so an uncollected power-up vanishes on the last-corpse impact. See docs/SPEC 'Item lifetime + level-clear cleanup'."
+    },
+    "PU_DISPATCH": {
+        "addr": "0x8839",
+        "width": 2,
+        "note": "measured (M5): 16-entry jump table of power-up handlers indexed by type (0 RAPID-FIRE (cadence mask 3) $88EF, 1 range $88F4, 2 range+speed $88EC, 3 giant $88F9, 4/5 giant2 $88FD, 6 umbrella $88B1, 7 water $88C3, 8 cross2 $88D5, 9 $88DC, 10 HEART = round-long invincibility (contact-kill/no-shooting/fast-walk) $8859, 11 $8883, 12 LEVEL-SKIP (enemies removed, 4 items at top, $9049=1, round advances +2040f) $890D, 13 lightning $889C, 14 FAST-WALK (+7 bit2) $88A7, 15 RET). All 16 handlers now measured (types 0/5/10/11/12/14/15 by poke-collect 2026-09-09; see the SPEC table)."
+    },
+    "P1_PUFLAGS": {
+        "addr": "0xFDDA",
+        "width": 1,
+        "note": "measured (M5): P1 persistent flags (P2=$FDE4). bit6 = lightning-blow ability (blue bottle, handler 13); bit4 = water-carry gate; bit5 = FIRE MODE (red cross, type 9: blows fireballs instead of bubbles, $BD70 -> $9DD4); bit3 = respawn invulnerability (also set for both players by type 10); bit2 = dying; bit1 = blow debounce; bit0 = player index. Death rebuilds the byte as bit0|bit3|bit7 (fire/lightning modes lost). ENTITY +7 bit2 ($FD87, set by types 10/14) = FAST WALK (2 px/frame)."
+    },
+    "HISCORE": {
+        "addr": "0xFFE1",
+        "width": 4,
+        "note": "measured (M5): high score, 8-digit BCD LE ($FFE1-$FFE4). Updated by $812E-$814A when a player's score exceeds it."
+    },
+    "P1_SCORE": {
+        "addr": "0xFFE5",
+        "width": 4,
+        "note": "measured (M5): P1 score 8-digit BCD LE ($FFE5-$FFE8) = $FFE1+4*1; P2 = $FFE9-$FFEC. Added via $80FA (amount at $FFED, DAA), digits drawn $8178-$81AD. (Earlier '$FFE4' note = the high score's top byte.)"
+    },
+    "SCORE_ADD_AMT": {
+        "addr": "0xFFED",
+        "width": 4,
+        "note": "measured (M5): 4-byte BCD amount added to the active player's score by $80FA; $8161 zeroes it (scratch)."
+    },
+    "P1_KEYTABLE": {
+        "addr": "0xB5FD",
+        "width": 8,
+        "note": "measured (M5): P1 active key table, 4 keys x [half-row-select, bit-mask] (LEFT/RIGHT/JUMP/BLOW); read by $AC0E. First byte $1F => Kempston. Decoded live = 5/8/0/7 (cursor). P2 = $B605. Selected by (IY+$5A) bit0 at $ABF4. WRITER (N7, live via title.pkl): filled by the one-shot LDIR at $9601 (16B, from staging $F5D2); front-end redefine builder $F6DB + digit table $F988; presets $F9E8=5807/$F9EC=6790/$F9F0=1245, raw Kempston $F9F4. The front end ($F5xx-$F9xx) + $95F3 copier are ABSENT from build/image.bin (post-boot)."
+    },
+    "P2_KEYTABLE": {
+        "addr": "0xB605",
+        "width": 8,
+        "note": "measured (M5): P2 active key table (same format as $B5FD). In play2p the first byte is $1F = Kempston."
+    },
+    "SCORE_ADD": {
+        "addr": "0x80FA",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): score-add ENTRY (CP 3 player guard). Adds the 4-byte BCD amount at $FFED-0 to the player's field ($FFE1+4*A) with DAA (loop $811B-$8121; DAA at $811D), updates the high score by a top-down LDD copy ($812E-$814C), redraws digits $8178-$81AD."
+    },
+    "POINT_VALUE_TABLE": {
+        "addr": "0x8649",
+        "width": 32,
+        "note": "measured (M5, 2026-09-08): 16 x 2-byte LE per-item point values, indexed by collectible type*2; loaded to $FFED at $8809, added by $80FA at $8817. type0-8=$0010..$0090, 9=$1000, 10=$0400, 11=$0800, 12=$0300, 13=$0700, 14=$0200, 15=$0500 (HUD=/10)."
+    },
+    "ITEM_INK_TABLE": {
+        "addr": "0x861D",
+        "width": 32,
+        "note": "measured (M5, 2026-09-08): 32-byte (2x16) INK/COLOUR table (low bank = special/giant $9603 pass, high bank $862D = regular $9605 pass). Read $8728, applied as OR-INK operand by $8765; $FF=random ink via LD A,R at $873E. NOT the value table (that is $8649) and NOT the sprite table (sprite = $5D00+(type+10)*32 at $8779)."
+    },
+    "PU_SPRITE_REMAP": {
+        "addr": "0x8639",
+        "width": 16,
+        "note": "measured (M5): power-up SPRITE-INDEX remap; sprite = $5D00 + $8639[type]*32. Sole consumer = the icon-draw calc $87A5-$87B0 (LD HL,$8639 at $87AC). NOT a spawn/selection table."
+    },
+    "EXTEND_MASK_P1": {
+        "addr": "0xFDE3",
+        "width": 1,
+        "note": "measured (M5): P1 EXTEND letter mask (= slot9 $FDDA +9). 6 bits E,X,T,E,N,D (0-5). Set by $B7E5; carries across levels + deaths. P2 = $FDED."
+    },
+    "EXTEND_MASK_P2": {
+        "addr": "0xFDED",
+        "width": 1,
+        "note": "measured (M5): P2 EXTEND letter mask (= slot10 $FDE4 +9). See EXTEND_MASK_P1."
+    },
+    "EXTEND_COLLECT": {
+        "addr": "0xB7E5",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): EXTEND letter-collect routine. From bubble-pop $B6D8 via $B75C (CP 5/CALL nc) when popped kind>=5; SUB 5 -> idx; bit from $B80E; mask addr = $FDE3+owner*10; OR C (duplicate idempotent = discount); sets $FED5=1; +10 internal (100 on screen) at the pop via $B6D8->$80FA (MEASURED; the old '+1000' was the $FFE4 misread); wall glyph drawn by $957E from table $95D5."
+    },
+    "EXTEND_BIT_TABLE": {
+        "addr": "0xB80E",
+        "width": 8,
+        "note": "measured (M5, 2026-09-09): EXTEND per-letter bit table, 8 entries [01 02 04 08 10 20 01 20] indexed by (kind-5): kinds 5-10 = E,X,T,E,N,D; the duplicate-art kinds 11/12 = E/D again -> bit0/bit5 (a kind-11 bubble completed the missing first-E bit)."
+    },
+    "GIANT_MAILBOX": {
+        "addr": "0xFECC",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): giant-item mailbox. Set 1/3 by power-up dispatch $88F9/$88FD (giant diamond src $5B00 / giant fruit src $C080); read+cleared at $8F1A -> CALL $A84D (sets GIANT_PHASE $A839=3, self-mods the $A8C1 draw source operand $A8C2)."
+    },
+    "GIANT_PHASE": {
+        "addr": "0xA839",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): giant-item active/drop phase (ALIASES BOSS_Y_TILE $A839 -- the $A824 draw engine serves both giant items and the boss). Set 3 by $A84D; cleared on collect."
+    },
+    "GIANT_VALUE_TABLE": {
+        "addr": "0xA9EA",
+        "width": 3,
+        "note": "measured (M5): giant-item value table [40 20 10]; the collect $A9B6 reads $A9EA[($A85C)-1] -> $FFEE (byte1 of the BCD add) -> $80FA. RESOLVED 2026-09-09 (live candycane collect): $A84D already DEC'd the mailbox into $A85C, so DIAMOND (mailbox 1 -> $A85C=0) double-decrements to idx $FF -> OUT-OF-BOUNDS read $AAE9=$56 -> +5600 internal (a stable quirk, MEASURED). FRUIT (mailbox 3 -> $A85C=2 -> idx 1) reads $A9EA[1]=$20 = +2000 = 20,000 on screen, MEASURED LIVE 2026-09-09 (falling_onto_peach, natural fall: $A9C2 -> $FFEE=$20, internal 3133->5133); the table is correctly indexed only for mailbox>=2. Red cane = type 4 ($88FD) arms mailbox 3."
+    },
+    "ENEMY_HOMING_X": {
+        "addr": "0xB612",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): enemy HOMING TARGET X = tracked-player X+8 (sole writer $AACB). Readers face-X $B08B/$B41B. (NOT a floor bound; 32 was just P1's round-1 start.)"
+    },
+    "ENEMY_HOMING_Y": {
+        "addr": "0xB613",
+        "width": 1,
+        "note": "measured (M5, 2026-09-08): enemy HOMING TARGET Y = tracked-player Y (sole writer $AAD0; P1 $FD86 or P2 $FD90). Readers hop-toward-row $B0DB/$B1FC/$B24C/$B400. (NOT a floor bound; 168 was just P1's round-1 start.)"
+    },
+    "ITEM_PHASE_STEP": {
+        "addr": "0x86D9",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): per-item 3-bit PHASE stepper (byte1 bits 0-2 of the power-up slot and every $9605 entry): phase=(phase+1)&7; at 4 -> REMOVE via $86E4 (byte0:=0) + shadow erase; else store at $8718. Gate $86CC-$86D7: LD A,[$86CD] / AND [$86CF]=$FF / JR nz skip -- $86CD is a live 8-bit tick counter (static $93), so the stepper runs only when it reads 0 = once per 256 frames; also skipped while $FED1 (level-transition flag) is set. The level-clear writes $FF into $86CD so it wraps to 0 next tick = forced immediate step (crown idle: phase 1->2->3->gone at f130/f386/f642, 256 apart). Counter incremented in place at $8688 (INC (HL), item-scan routine). This IS the item timeout."
+    },
+    "ITEM_REMOVE": {
+        "addr": "0x86E4",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): LD (HL),0 -- the universal collectible REMOVER (power-up slot + $9605 entries), reached when the phase stepper hits 4. Zeroed the cane at f61 and the crown at f18 after the level-clear forced their phase >=3; removed timed-out fruit at f317."
+    },
+    "LEVEL_CLEAR": {
+        "addr": "0x8ED4",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): level-clear routine, fires when the LAST CORPSE SETTLES (+7 bit7 clears). $8CB0/$86CD:=$FF (self-mod gates); $9604|=3 (power-up phase) and $9606|=3 ($9605 entry 0 = the spawned-in points item) -- NOT entries 1+ (corpse drops); $8DBD:=0; $9049:=1; then $8F00 resets the 12 bubble slots and consumes the giant mailbox $FECC -> $A84D."
+    },
+    "CORPSE_DROP_WRITE": {
+        "addr": "0x8BA7",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): when a corpse settles it is written as a NEW $9605 fruit entry -- byte0 at $8BA7 ((X&F8)|type), byte1 at $8BB0 ((Y&F8)|phase~2). Untouched by the level-clear marks, so corpse drops persist (entry 4 survived to the f436 round advance) until the 256-frame clock or the next round's init."
+    },
+    "P1_LIVES": {
+        "addr": "0xFDDC",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09, death.szx): P1 SPARE-lives counter (persistent struct +2; P2 = $FDE6). Decremented at $AB5E when the death anim ends; >=0 -> respawn at the start (24,168) with $FDDA bit3 invulnerability (~161f), bit6 lightning-blow CLEARED, speed reset; <0 -> $AB64 RES 7 (player removed) -> $8E2A -> $FEC9 game-over. +1 for both players entering rounds 21/41/61 ($982A/$982D); +1 on EXTEND completion ($9558). Drawn by $806C as icons at row 23 (P1 left / P2 right), max 5 shown. INIT: set to 3 by the new-game player init $97D2 (LD (IY+$5C),3; same routine seeds +$5B=2, +$5D=8, +$5E=8 range, +$60=0) -- measured 2026-09-09 for both players."
+    },
+    "P2_LIVES": {
+        "addr": "0xFDE6",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): P2 spare-lives counter (persistent struct $FDE4 +2). See P1_LIVES. INIT: set to 3 by the new-game player init $97D2 (LD (IY+$5C),3; same routine seeds +$5B=2, +$5D=8, +$5E=8 range, +$60=0) -- measured 2026-09-09 for both players."
+    },
+    "DEATH_HIT": {
+        "addr": "0x927D",
+        "width": 1,
+        "note": "measured (M5): player hit handler. $FED0!=0 -> the ENEMY dies instead ($8BC2 corpse) + player +1000 internal; $FDDA bit4 (water-carry) or bit3 (already dying) -> immune; else SET 2+SET 7 on $FDDA/$FDE4 and anim (IX+4):=$50. Death anim tail $AB48-$AB93: sprite $D300, X&=$F8, countdown ~204f (round 3), then $AB5E lives-1."
+    },
+    "LIVES_DRAW": {
+        "addr": "0x806C",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): lives-icon draw. Builds the 8x8 icon at $85B1 from 8 alternate bytes of $856C (mask $85B9); P1 from $50E0 (row 23 col 0) rightward, P2 from $50FF (row 23 col 31) leftward via a self-modded INC L/DEC L ($2C/$2D -> $80F6); one masked icon per spare life, capped at 5 ($8097 CP 5); only for an active player (RET p on $FD87/$FD91 bit7). Called at round start, respawn ($AB6D) and extra-life grants."
+    },
+    "INVINCIBLE_FLAG": {
+        "addr": "0xFED0",
+        "width": 1,
+        "note": "measured (M5, 2026-09-10): the HEART invincibility flag (power-up type 10, sprite idx 5 $5DA0, colour-cycling ink $FF). Set to 1 by $885D on collect; makes both players invulnerable ($FDDA/$FDE4 bit3) with NO timeout ($ABE8 skips the $ABEA (IY+4) countdown while $FED0=1), lasting until the round build clears it. While set: contact kills enemies (+1000, $927D), enemy shoot-gates refilled to $64 ($900B). The player sprite flashes on/off ($A5FB BIT3 / RET nz on even draw-parity frames)."
+    },
+    "GAMEOVER_TIMER": {
+        "addr": "0xFEC9",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): game-over countdown. Set ~$B4 by $8E2A when both players' active bits are clear; 'GAME OVER' printed at row 10 col 12 ($8CE7->$484C); counts up +1/frame to $FF (~76f) then wraps to 0 and the game exits to the front end (round $8609 := 0). Also the level-advance abort gate read at $8D0D (RET nz)."
+    },
+    "LETTER_FLAG": {
+        "addr": "0xFED5",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): 'an EXTEND letter was just collected' flag, set by $B7E5 ($B808); consumed by $948F each main-loop pass, which clears it and runs the completion test $94C2 for P1 then P2."
+    },
+    "EXTEND_COMPLETE": {
+        "addr": "0x94C2",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09, EXTEND_complete.szx): per-player completion: LD A,(IX+$63)/SUB $3F/RET nz. On completion: mask:=0, $FEC4/$FEC5:=0, sound $8E0A(2), item collection DISABLED ($87B2:=RET), player digit '1'+bit0 -> $9AB3, whole shadow $E000-$FAFF zeroed + tile $856C cleared, then $9500: $8C14 removes all enemies+bubbles and restores the blank background; 10x16 random food items drawn ($9506-$9535); lives icons; message $9AA9 'N I C E      P' printed DOUBLE-HEIGHT ($801D->$8058) at $4869 rows 11-12 cols 9-22 attrs $CF (bright white on blue, FLASH); delay; +1 life ($9558); delay; round advance. Timings from the pop: enemies +2, items +5..7, message +13, life +134, advance +247."
+    },
+    "PROJ_SLOTS": {
+        "addr": "0x5B00",
+        "width": 20,
+        "note": "measured (M5, 2026-09-09): the game's TWO projectile slots, 10-byte entity-style structs at $5B00 and $5B0A: +0/1 sprite, +4 shooter-flag addr (low), +5 X, +6 Y (low bits = phase for kind 1), +7 flags (bit7 active, bit0 facing, bit4 P2, bit2 bounced), +8 KIND (1 boulder / 5 bottle / 6 fire breath / 7 falling shot / 8 = the red-cross PLAYER FIREBALL), +9 launch X (kind 5). Shares memory with the giant-diamond bitmap and the round-builder scratch (drawn-diamond top-row artifact). Not cleared at level-clear."
+    },
+    "PROJ_REQUEST": {
+        "addr": "0x9DDE",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): player-fireball request flag set by the blow path $9DD4 (fire mode); $9DDF/E0 latch the blowing player's IX. Consumed by the tick $9DE1 (first call of the projectile/elemental dispatch $9E50, every other frame) which spawns kind 8 into a free $5B00/$5B0A slot at the player's grid X/Y."
+    },
+    "PROJ_SPAWN": {
+        "addr": "0x9AFC",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): ENEMY-shot spawner for an inactive slot (every other frame, $9AF5 parity): PRNG&7 (skip on 0), random enemy index vs live count $AA57, shooter TYPE must be 1 or >=5, gate $9B70 ($A891+index must be 0 -- power-up type 10 fills it with $FF = no shooting; enemy active, not captured); spawns at the enemy with +7=$C0|facing, +8=type."
+    },
+    "PROJ_MOVE": {
+        "addr": "0x9BB4",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): active-projectile update: erase ($A314), dispatch by +8 kind -> $9BE3 boulder / $9C8C bottle / $9C4B fire / $9CDC falling / $9CF4 player fireball (repaints its 2x2 attrs $42 red, disables the player-hit check, reuses $9C4B without the platform stop). Mover $9D77 = X +-8 per tick by facing; sprite frame $9D65 ($A37C bit1); deactivate $9D58; enemy-shot-vs-player check $9D8B/$9D8C (grid cell match vs $FD85/6 or $FD8F/90)."
+    },
+    "ENV_KILL": {
+        "addr": "0x9377",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): per-enemy environment-kill check (active, not captured, Y>=16): reads the enemy's attribute cells (own / below / below-right) and kills on fire-red ((attr&$47)==$42, the fireball's paint) or water-cyan ((attr&$38)==$28, the blue-cross flood) -> CALL $8BC2 at $93D0 (corpse, random launch). Colour IS the hitbox."
+    },
+    "DROP_TYPE_GEN": {
+        "addr": "0x8B9F",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): self-modified corpse-drop TYPE generator inside the drop writer ($8B9E LD A,n / $8BA0 INC A / $8BA1 AND 7 / store back): normal drops cycle types 0..7. $88E0 (power-up types 7/8/9) patches it to LD A,9 / NOP / AND $FF -> every drop is type 9 = DIAMOND (10,000 on screen). Drop writer: byte0 at $8BA7 ((X&F0)|type), byte1 at $8BB0 ((Y&F8)|1)."
+    },
+    "SHOOT_GATE": {
+        "addr": "0xA891",
+        "width": 8,
+        "note": "measured (M5, 2026-09-09): 8 per-enemy shoot-gate COUNTDOWN bytes ($A891+index), read by the spawner check $9B70 (must be 0 to shoot), decremented ~1 per 2 frames while non-zero. Type 11 ($8883) sets them to $FF and $FED2=1 ($901E clears $FED2 once all are 0); type 10 ($8859) sets $FF and $900B refills them to $64 every frame while $FED0=1 = enemies never shoot."
+    },
+    "BLOW_CADENCE": {
+        "addr": "0xFDE0",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): P1 blow-cadence counter ((IX+$60); P2 $FDEA). The blow routine $BD37 allows a blow when it reads 1 (or 2 with the type-14 rapid-fire +7 bit2); it counts per blow and is zeroed at respawn. ALSO the 48K blow-click generator: BEEP_BLOW outputs this counter*8 to port $FE every 2 frames (M6)."
+    },
+    "MACHINE_PROBE": {
+        "addr": "0xFAC3",
+        "width": 1,
+        "note": "measured (M6, 2026-09-09): front-end TIMING PROBE that decides 48K vs 128K: HALT-sync, ROM FRAMES:=0, count loop iterations (BC = blocks of 256, reading contended $5C78) until FRAMES low byte = $FF; BC in {$075E,$0763} -> A=$30 (48K) else A=$80 (128K). Harness (contended) measures $075E with no key held; a key held through it -> $075C -> 128K; uncontended -> $07AB. TRAPS #28."
+    },
+    "SOUND_INIT": {
+        "addr": "0x967E",
+        "width": 1,
+        "note": "measured (M6): game-start decision fed by the probe result in A' (CP $80 at $9696). 48K: writes $C9 (RET) to $8DC4/$8E05/$8E0A. 128K: copies the AY engine $E6A8-$F5BB via the screen into bank 1 $C350-$D263 (OUT $7FFD,($9AE7)|1). Both: LDIR $E000-$E6A7 -> $5B00."
+    },
+    "SOUND_GATE": {
+        "addr": "0x8DC4",
+        "width": 1,
+        "note": "measured (M6): the ISR's sound hook byte, CALLed from $8D8F every frame after the draw/bubble pass. $F3 (DI, tape value) = 128K engine path $8DC5-$8E04; $C9 (RET) = 48K. Check it in every saved state: all owner .szx = $C9; pre-2026-09-09 harness play states = $F3."
+    },
+    "SFX_REQUEST": {
+        "addr": "0x8E0A",
+        "width": 1,
+        "note": "measured (M6): 128K SFX request entry (A = sound number vs CUR_SOUND $FED4; page bank 1; CALL $D167; unpage). RET on 48K. $8E05 = the wait-for-engine-idle variant (busy byte $8E06 written by the ISR at $8E01); RET on 48K. Call sites/sound numbers listed in SPEC M6."
+    },
+    "CUR_SOUND": {
+        "addr": "0xFED4",
+        "width": 1,
+        "note": "measured (M6): current 128K sound number (1 = music/idle cadence at $8DC5); untouched on the 48K branch."
+    },
+    "AY_ENGINE_SRC": {
+        "addr": "0xE6A8",
+        "width": 3860,
+        "note": "measured (M6): the AY music/SFX engine as stored on the tape ($E6A8-$F5BB, below the entry $F5BC; AY player at $F3xx). Relocated by SOUND_INIT to bank 1 $C350-$D263 (delta $2358): $CF80 tick, $D167 request. M10 material; on the flat 48K image the copy overwrites the sprite region."
+    },
+    "ISR_DRAW_GATE": {
+        "addr": "0xFEC4",
+        "width": 1,
+        "note": "measured (M6/M3 correction): non-zero -> the ISR's ODD-frame branch $8DA2 runs the entity DRAW PASS $A3AD (~26.7k T in idle round 1) then $AA60. Cleared with $FEC5 by the hurry-up trigger $9052."
+    },
+    "ISR_BUBBLE_GATE": {
+        "addr": "0xFEC5",
+        "width": 1,
+        "note": "measured (M6/M3 correction): non-zero -> the ISR's EVEN-frame branch $8DAD jumps to the bubble pass $B62C (~1.4k T with no bubbles)."
+    },
+    "BEEP_COLLECT": {
+        "addr": "0x8CB1",
+        "width": 1,
+        "note": "measured (M6): 48K item-collect chirp, CALL $8CB1 from $881F (the $8809 award path) with C=40: 40 half-cycles $30/$00, half-period 2C*33+~30 T (2686 -> 173 T), 0.82 frame. Bytes $8CAE-$8CB0 before it are variables (level-clear scratch), not code."
+    },
+    "BEEP_JUMP": {
+        "addr": "0x8FA5",
+        "width": 1,
+        "note": "measured (M6): 48K jump tone, called every main-loop pass ($8D25 chain) for P1 ($FDDA) then P2 ($FDE4): skip if flags bit2 (dying) or entity inactive or +9 in {0,$FF}; else E = |JUMP_TONE_TABLE[+9]-16|+1 and 2 square-wave cycles of half-period 16E+10 T at $8FD6-$8FE6 (346 T rising .. 218 T falling)."
+    },
+    "JUMP_TONE_TABLE": {
+        "addr": "0xB57D",
+        "width": 34,
+        "note": "measured (M6): FC x6, FD x3, FE x3, FF x2, 00 x4, 01 x2, 02 x3, 03 x3, 04 x6, FC, FC -- indexed by the jump phase; E = |v-16|+1 = 21,20,19,18,17,16,15,14,13."
+    },
+    "BEEP_BLOW": {
+        "addr": "0xACA5",
+        "width": 1,
+        "note": "measured (M6): 48K blow clicks: while (IY+$60) (= BLOW_CADENCE) is non-zero, OUT (IY+$60)*8 every 2 frames (values 8..56 -> speaker bit4 0,1,1,0,0,1,1), then (IY+$60) = ((IY+$60)+1) AND (IY+$5F)=7. Armed at $ACE1 on the blow key."
+    },
+    "HURRY_KLAXON": {
+        "addr": "0x9062",
+        "width": 1,
+        "note": "measured (M6): the 48K HURRY UP! routine (BLOCKING ~23 frames): C=120 iterations of a ~13.6k T delay; every 32 iterations speaker OFF ($906F/$9081), the 'HURRY UP !' attrs $59AB (row 13 cols 11-20) toggled cyan/yellow via $995A, speaker ON at $908F -> 3 faint clicks. Not the death sound (death is silent on 48K)."
+    },
+    "HURRY_TRIGGER": {
+        "addr": "0x9037",
+        "width": 1,
+        "note": "measured (M6): skipped on round 80 ($8609=$50); fires when HURRY_TIMER $8DBD >= HURRY_THRESHOLD ($745C, 1500 on round 1): self-mod flags at $9049/$904D, clears ISR_BUBBLE_GATE/ISR_DRAW_GATE ($9052) then the klaxon; $917C = threshold+500 second stage (Boris, IY=$9250)."
+    },
+    "HURRY_RESET": {
+        "addr": "0x915F",
+        "width": 1,
+        "note": "measured (M6): self-mod countdown 'LD A,n / DEC A / RET NZ' (operand $9160, armed =1 at $ABB1 in the player respawn path): on firing DI, $9160/$9257/$904D := 0, HURRY_TIMER $8DBD := 0, IY=$9250 CALL $A314 (Boris removed), EI."
+    },
+    "BEEP_LETTER": {
+        "addr": "0xB790",
+        "width": 1,
+        "note": "measured (M6): 48K click at an EXTEND letter / bubble-score pop: OUT 0, +1 score via $80FA, OUT $30."
+    },
+    "PAUSE": {
+        "addr": "0x8FE7",
+        "width": 1,
+        "note": "measured (M6): from the main loop $8D28: SYMBOL SHIFT (row $7F bit1) -> save CUR_SOUND, request sound 0 (128K), DI, border GREEN (OUT 4), spin until CAPS SHIFT (row $FE bit0), OUT 0, restore. Not redefinable."
+    },
+    "FULL_RESTORE": {
+        "addr": "0x8216",
+        "width": 1,
+        "note": "measured (M6/M4 correction): the whole-playfield shadow->display copy ($E000+ -> $4000+, rows 2-23 via the $FD04 row table) is called ONLY by the round builder $7F4E and the playfield REPAINT routine $8C28 ($8216 + attrs) -- 0 entries in 4 idle frames. Per-frame erase is per-entity inside the ISR draw pass $A3AD."
+    },
+    "YELLOW_CROSS_FX": {
+        "addr": "0xA0A3",
+        "width": 1,
+        "note": "measured (M5/M6, 2026-09-09, yellow_cross.szx): power-up type 8 = LIGHTNING STORM driver, run every frame while $FECF != 0 (counter +1/frame, 245 frames). OUT 0 per tick; every 32 ticks 4 random inks (RNG&3) painted over rows 2-23 attrs ($A0E0/$A0ED, border green); RED ink kills every free enemy via the shared red-attribute check ($8BC2 corpse); ticks $F0-$FF burst all bubbles ($A0F5); $FD/$FE paint $42 red-on-black + OUT $FD/$FE (border cyan/yellow, speaker on); wrap -> $8C28 repaint. $FECE (type 7 water fill) shares the tail $A127+."
+    },
+    "PLAYFIELD_REPAINT": {
+        "addr": "0x8C28",
+        "width": 1,
+        "note": "measured (M6): CALL $8216 (full bitmap restore from the $E000 shadow) then attrs rows 2-23 ($5840, 704 bytes) from the colour shadow $F840 using $8309/$830A per bit 5. Called at the end of the yellow-cross storm and by the lightning code; NOT per frame."
+    },
+    "PU8_STORM_TICK": {
+        "addr": "0xFECF",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): yellow-cross (type 8) storm tick counter: set to 1 by the dispatch $88D5, +1/frame in $A0A3, effect phases at multiples of 32 (flash), $F0-$FF (bubbles burst), $FD/$FE (red strike), wrap 0 = end + repaint."
+    },
+    "PU_FASTWALK_KEEP": {
+        "addr": "0xFDDB",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): player +$5B (P2 $FDE5): 2 by default ($97E6), 3 after power-up type 14 ($88AB). Its bit 0 is folded into the +7 keep-mask at the player re-init $99EF (AND 1 / <<2 / OR $C0), so the FAST-WALK bit (+7 bit 2) survives round start/respawn only when it is 3."
+    },
+    "PLAYER_BUBBLE_CONTACT": {
+        "addr": "0xB8E5",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): per risen bubble (+7 bit2) test vs P1/P2 ($B901): box Y (pY-16,pY+8], X (pX-16,pX+15] ($B9D4/$B9DE); facing R pops X<=pX+13, facing L pops X>=pX-10; the remaining front-edge band pushes the bubble by 2*$B8DB[2|6] px when the player presses toward it ($B945, $BF0A erase, $B977 clamp 17..224); burst = $B9B6."
+    },
+    "BUBBLE_BURST": {
+        "addr": "0xB9B6",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): player burst of a bubble: +7 := (+7 & $EF) | player<<4 (operand $B9BC), SET 3 + SET 1 (emit flag), +4 := 20; if not yet risen +3:=2 / SET 2. Called from $B92F/$B940."
+    },
+    "BUBBLE_DRIFT_TABLE": {
+        "addr": "0xB8DB",
+        "width": 9,
+        "note": "measured (M5): signed drift offsets [0,-1,1,0,0,1,-1,0,0] indexed by the bubble's drift state; also reused by the player push (index 2 = +1 right-facing, 6 = -1 left-facing, applied x2)."
+    },
+    "PU_ROUND_TABLE": {
+        "addr": "0xFF90",
+        "width": 81,
+        "note": "measured (M5, 2026-09-09): per-round power-up byte, indexed by round-1. Decoded at $8C5E: X=(byte>>1)&$70 (power-up), mirror $100-(X+16) (points item), swapped by round parity; Y=((byte<<4)&$F0)>>1 | ($80 if round in the $860F list). Power-up TYPE = round via the $8A62/$8A72 map else random 0..3 ($8A2E); points-item TYPE = the rotating counter $9AE9 (advanced at level-clear $8EF2). 8 rounds validated against live spawns."
+    },
+    "POINTS_ITEM_COUNTER": {
+        "addr": "0x9AE9",
+        "width": 1,
+        "note": "measured (M5, 2026-09-09): rotating index that picks the spawned-in points item's collectible type; advanced at the level-clear routine $8EF2 (fbkill: 11->7). Read only at $89E6."
+    },
+    "FIRE_FLAME": {
+        "addr": "0xFDEE",
+        "width": 10,
+        "note": "measured (M5, 2026-09-09, fire_kill.szx): the fire elemental object (shares slot $FDEE with the lightning bolt). +4 = flame count (9 = the $9FC8 cap), +5/+6 = anchor X/Y; $FDF2 = flame count, $FDF4 = flame Y ($B0=176 = the floor surface row). The flames paint bright RED $42 on the floor row and kill via the shared probe $9377 red branch (attr&$47==$42) -> $8BC2, same as the red cross."
+    },
+    "BORIS": {
+        "addr": "0x9250",
+        "width": 16,
+        "note": "measured (M5, 2026-09-10, boris_kills_player.szx): Baron von Blubba's dedicated struct (NOT an $FD80 slot). +4 = phase byte, RLC-doubled each stage $91AE (02 appear ->04->08->10->20->40->80, reset $40 at $91C7); +5 X, +6 Y, +7 flags (bit7 active). Update $918B: each stage waits ~512 frames ($9194 x256 * $919C x2) then moves +-8 px/frame -- Y-align to the LIVE player Y $FD86 ($91F7), or X-approach to the LIVE player X $FD85 ($921B, walk sprite $FF50). Final X overlap = AABB kill ($92DE->$927D). One struct, no extra copies. Removed by $915F/$A314 on death/round-clear."
+    },
+    "RETURN_ROUND": {
+        "addr": "0xFEC7",
+        "width": 1,
+        "note": "measured (M5, 2026-09-10): the RETURN-ROUND lookahead. Reseeded randomly ($9811 LD A,R AND $1F ADD $1E = 30-61) when $8609 passes $51 (boss/finale). Each round advance $97F8 sets $8609 from it then increments it; on the treasure-room ($51) loop this drives the endless second quest (milestone 21/41/61 -> warp back to another treasure room, else play $FEC7). Also the 82->normal transition."
+    }
+}

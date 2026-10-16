@@ -1,0 +1,1245 @@
+#!/usr/bin/env python3
+"""
+selftest.py -- prove the kit's tools work with NO tape and NO manifest values.
+
+Everything here is synthetic: a TZX built in memory (a BASIC loader whose
+RANDOMIZE USR carries the 5-byte binary form, plus a 256-byte CODE block), code
+poked into a ROM-only harness, tiny images for the walker, the byte-grep, the
+disassembler and the renderers.  It exercises the parts a port relies on before
+it has anything real to feed them, so a broken environment (no SkoolKit ROM,
+the wrong z80dis, no PIL) shows up here and not three phases later.
+
+Usage:  python tools/selftest.py [-v]        (-v prints tracebacks)
+Exit status is non-zero if any check fails.
+"""
+import contextlib
+import importlib
+import io
+import json
+import os
+import sys
+import tempfile
+import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+VERBOSE = '-v' in sys.argv
+RESULTS = []
+
+
+def mod(name):
+    return importlib.import_module(name)
+
+
+def check(name, fn):
+    try:
+        fn()
+    except Exception as e:                      # noqa: BLE001
+        RESULTS.append((name, False))
+        print(f'FAIL  {name}: {e!r}')
+        if VERBOSE:
+            traceback.print_exc()
+        return
+    RESULTS.append((name, True))
+    print(f'ok    {name}')
+
+
+def eq(got, want, what=''):
+    if got != want:
+        raise AssertionError(f'{what}: got {got!r}, want {want!r}')
+
+
+# ---------------------------------------------------------------------------
+# a synthetic tape: text block, BASIC header+data, CODE header+data, pause
+# ---------------------------------------------------------------------------
+USR = 32768
+CODE = bytes((i * 7 + 3) & 0xFF for i in range(256))
+
+
+def le16(v):
+    return bytes([v & 0xFF, (v >> 8) & 0xFF])
+
+
+def rom_block(flag, body):
+    data = bytes([flag]) + bytes(body)
+    x = 0
+    for b in data:
+        x ^= b
+    return data + bytes([x])
+
+
+def header(htype, name, length, p1, p2):
+    return rom_block(0x00, bytes([htype]) + name.encode('latin-1')[:10].ljust(10)
+                     + le16(length) + le16(p1) + le16(p2))
+
+
+def std_block(data, pause=1000):
+    return bytes([0x10]) + le16(pause) + le16(len(data)) + data
+
+
+def num5(n):
+    """The 5-byte small-integer form the ROM stores behind a literal."""
+    return bytes([0x0E, 0x00, 0x00, n & 0xFF, (n >> 8) & 0xFF, 0x00])
+
+
+def basic_line(number, body):
+    return bytes([number >> 8, number & 0xFF]) + le16(len(body)) + body
+
+
+# 10 RANDOMIZE USR 32768
+PROG = basic_line(10, bytes([0xF9, 0xC0]) + b'32768' + num5(USR) + b'\r')
+
+
+def make_tzx():
+    return (b'ZXTape!\x1a' + bytes([1, 20])
+            + bytes([0x30, 8]) + b'selftest'                                  # 0 text
+            + std_block(header(0, 'loader', len(PROG), 10, len(PROG)))       # 1 BASIC header
+            + std_block(rom_block(0xFF, PROG))                                # 2 BASIC data
+            + std_block(header(3, 'code', len(CODE), USR, 32768))            # 3 CODE header
+            + std_block(rom_block(0xFF, CODE))                                # 4 CODE data
+            + bytes([0x20]) + le16(0))                                        # 5 stop
+
+
+@contextlib.contextmanager
+def tzx_file():
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'selftest.tzx')
+        open(p, 'wb').write(make_tzx())
+        yield p
+
+
+# ---------------------------------------------------------------------------
+# phase 1: tzx.py / basic.py
+# ---------------------------------------------------------------------------
+def t_tzx_parse():
+    tzx = mod('tzx')
+    (maj, mino), blocks = tzx.parse_bytes(make_tzx())
+    eq((maj, mino), (1, 20), 'version')
+    eq([b.id for b in blocks], [0x30, 0x10, 0x10, 0x10, 0x10, 0x20], 'block ids')
+    eq([b.index for b in blocks], list(range(6)), 'indices')
+    eq([b.checksum_ok for b in blocks if b.data is not None], [True] * 4, 'checksums')
+    h0 = tzx.decode_header(blocks[1].data)
+    eq((h0['type'], h0['name'], h0['length'], h0['autostart_line']),
+       (0, 'loader    ', len(PROG), 10), 'BASIC header')
+    h1 = tzx.decode_header(blocks[3].data)
+    eq((h1['type'], h1['load_address'], h1['length']), (3, USR, 256), 'CODE header')
+    eq(bytes(blocks[2].data[1:-1]), PROG, 'BASIC body')
+    eq(bytes(blocks[4].data[1:-1]), CODE, 'CODE body')
+    eq(len(blocks[4].data) - 2, h1['length'], 'body length vs header')
+    eq(blocks[0].info['text'], 'selftest', 'text block')
+    eq(blocks[5].info['pause_ms'], 0, 'stop block')
+
+
+def t_tzx_file_and_report():
+    tzx = mod('tzx')
+    with tzx_file() as p:
+        _, blocks = tzx.parse(p)
+        eq(len(blocks), 6, 'blocks via file')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tzx.report(p)
+        text = out.getvalue()
+        assert 'No checksum or length problems.' in text, text
+        assert 'HEADER: BASIC program' in text and 'HEADER: Code' in text, text
+        assert 'MATCH' in text and 'MISMATCH' not in text, text
+
+
+def t_tzx_bad_checksum():
+    tzx = mod('tzx')
+    raw = bytearray(make_tzx())
+    i = raw.find(CODE[:8])
+    raw[i + 3] ^= 0x01
+    _, blocks = tzx.parse_bytes(bytes(raw))
+    eq(blocks[4].checksum_ok, False, 'flipped byte detected')
+    eq(blocks[2].checksum_ok, True, 'other block still fine')
+
+
+def t_tzx_unhandled_stops():
+    tzx = mod('tzx')
+    raw = make_tzx()[:10] + bytes([0x16, 0, 0, 0, 0])      # a deprecated C64 block
+    try:
+        tzx.parse_bytes(raw)
+    except tzx.TzxError as e:
+        assert 'UNHANDLED BLOCK ID 0x16' in str(e), e
+        return
+    raise AssertionError('parser skipped an unhandled block instead of stopping')
+
+
+def t_basic():
+    basic = mod('basic')
+    lines, consumed = basic.detokenise(PROG)
+    eq(lines, [(10, 'RANDOMIZE USR 32768<=32768>')], 'listing')
+    eq(consumed, len(PROG), 'consumed')
+    eq(basic.usr_targets(PROG), [(10, USR)], 'USR targets')
+    eq(basic.float5(bytes([0, 0, 0, 0x80, 0])), 32768, 'small int')
+    eq(basic.float5(bytes([0, 0xFF, 0xFF, 0xFF, 0])), -1, 'negative small int')
+    eq(basic.float5(bytes([0x80, 0, 0, 0, 0])), 0.5, 'FP 0.5')
+    eq(basic.float5(bytes([0x81, 0, 0, 0, 0])), 1.0, 'FP 1.0')
+    # the digits lie, the binary form is what runs
+    lying = basic_line(20, bytes([0xF9, 0xC0]) + b'32768' + num5(23778) + b'\r')
+    eq(basic.usr_targets(lying), [(20, 23778)], 'binary form wins')
+
+
+# ---------------------------------------------------------------------------
+# phase 2: mkloader.py / mkimage.py
+# ---------------------------------------------------------------------------
+def t_mkloader():
+    mkloader = mod('mkloader')
+    tzx = mod('tzx')
+    eq(mkloader.PROG - mkloader.CHANS, 21, 'CHANS is the 21-byte stock block')
+    eq(mkloader.PROG, 0x5CCB, 'PROG on a stock 48K')
+    _, blocks = tzx.parse_bytes(make_tzx())
+    idx, basic = mkloader.find_basic(blocks)
+    eq((idx, basic), (2, PROG), 'BASIC block found via its header')
+    mem = mkloader.build_loader_image(basic, copies=[(0x5CCB, 0xFF00, len(PROG))])
+    eq(len(mem), 0x10000, 'image size')
+    eq(bytes(mem[0x5CCB:0x5CCB + len(PROG)]), PROG, 'BASIC at PROG')
+    eq((mem[0x5CCB], mem[0x5CCC]), (0, 10), 'first line number, big-endian, at PROG')
+    eq(mem[0x5CCA], 0, 'nothing below PROG')
+    eq(bytes(mem[0xFF00:0xFF00 + len(PROG)]), PROG, 'hand-performed relocation')
+
+
+def t_mkimage_auto():
+    mkimage = mod('mkimage')
+    with tzx_file() as p:
+        mem, lines = mkimage.build_image(p)                 # blocks: follow the headers
+    eq(len(mem), 0x10000, 'image size')
+    eq(bytes(mem[0x5CCB:0x5CCB + len(PROG)]), PROG, 'BASIC at PROG')
+    eq(bytes(mem[USR:USR + 256]), CODE, 'CODE at its header address')
+    eq(len(lines), 2, 'two placements reported')
+    assert lines[1].startswith('block #4'), lines
+
+
+def t_mkimage_explicit():
+    mkimage = mod('mkimage')
+    tzx = mod('tzx')
+    _, blocks = tzx.parse_bytes(make_tzx())
+    spec = [{'dest': 0x5CCB, 'flag': 0xFF},                  # first unused $FF block = BASIC
+            {'dest': 0x9000, 'len': 256, 'block': 4}]        # by TZX index
+    mem, lines = mkimage.place(blocks, spec, copies=[(0x9000, 0xA000, 16)])
+    eq(bytes(mem[0x5CCB:0x5CCB + len(PROG)]), PROG, 'flag match took the BASIC block')
+    eq(bytes(mem[0x9000:0x9100]), CODE, 'index match placed CODE')
+    eq(bytes(mem[0xA000:0xA010]), CODE[:16], 'copy applied after placement')
+    eq(len(lines), 3, 'placements + copy reported')
+    mem, lines = mkimage.place(blocks, spec, upto=1)
+    eq(bytes(mem[0x9000:0x9100]), bytes(256), '--upto leaves later blocks out')
+    assert any('not placed' in l for l in lines), lines
+    for bad in ([{'dest': 0x9000, 'len': 255, 'block': 4}],
+                [{'dest': 0x9000, 'block': 9}],
+                [{'dest': 0xFFF0, 'block': 4}]):
+        try:
+            mkimage.place(blocks, bad)
+        except mkimage.ImageError:
+            continue
+        raise AssertionError(f'{bad} accepted')
+
+
+# ---------------------------------------------------------------------------
+# phase 6: screen.py
+# ---------------------------------------------------------------------------
+def t_screen_addr():
+    screen = mod('screen')
+    for x, y, want in [(0, 0, 0x4000), (8, 0, 0x4001), (255, 0, 0x401F),
+                       (0, 1, 0x4100), (0, 7, 0x4700), (0, 8, 0x4020),
+                       (0, 63, 0x47E0), (16, 63, 0x47E2), (0, 64, 0x4800),
+                       (0, 191, 0x57E0), (255, 191, 0x57FF)]:
+        eq(screen.scr_addr(x, y), want, f'scr_addr({x},{y})')
+    for x, y, want in [(0, 0, 0x5800), (8, 8, 0x5821), (255, 191, 0x5AFF)]:
+        eq(screen.attr_addr(x, y), want, f'attr_addr({x},{y})')
+    every = {screen.scr_addr(x, y) for y in range(192) for x in range(0, 256, 8)}
+    eq(every, set(range(0x4000, 0x5800)), 'display file is a bijection onto $4000-$57FF')
+
+
+def t_screen_render():
+    screen = mod('screen')
+    mem = bytearray(0x10000)
+    mem[screen.scr_addr(0, 0)] = 0x80
+    mem[screen.attr_addr(0, 0)] = 0x47                      # BRIGHT, ink 7, paper 0
+    mem[screen.scr_addr(8, 0)] = 0xFF
+    mem[screen.attr_addr(8, 0)] = 0x02                      # ink 2 (dim), paper 0
+    mem[screen.attr_addr(0, 8)] = 0x87                      # FLASH, ink 7, paper 0; no pixels
+    img = screen.render(mem)
+    px = img.load()
+    eq(img.size, (256, 192), 'size')
+    eq(px[0, 0], (255, 255, 255), 'bright ink pixel')
+    eq(px[1, 0], (0, 0, 0), 'paper pixel')
+    eq(px[8, 0], (0xD7, 0, 0), 'dim red')
+    eq(px[0, 8], (0, 0, 0), 'flash cell, phase 0 shows paper')
+    px2 = screen.render(mem, flash_phase=1).load()
+    eq(px2[0, 8], (0xD7, 0xD7, 0xD7), 'flash cell, phase 1 swaps')
+    at = screen.render_attrs(mem)
+    eq(at.size, (32, 24), 'attr sheet size')
+    eq(at.load()[0, 0], (255, 255, 255), 'attr sheet shows ink')
+
+
+# ---------------------------------------------------------------------------
+# phase 7: harness.py, ROM only
+# ---------------------------------------------------------------------------
+def fresh():
+    """ROM only, blank RAM, PC=0 -- independent of whatever port.json says."""
+    H = mod('harness')
+    return H, H.Harness(image=False, deck=False, entry=0)
+
+
+def t_harness_rom():
+    H, h = fresh()
+    eq(h.peek(0, 3), b'\xF3\xAF\x11', 'real 48K ROM starts DI; XOR A; LD DE,...')
+    eq(h.pc(), 0, 'entry honoured')
+    eq(h.regs[H.SP], 0xFFFF, 'default SP')
+    h.mem[0x0000] = 0x00
+    eq(h.memobj.rom_writes, 1, 'ROM write counted')
+    eq(h.peek(0), b'\xF3', 'ROM write ignored')
+    assert h.deck is None and h.tape_call_pc is None
+
+
+def t_harness_run():
+    H, h = fresh()
+    h.poke(0x8000, 0x3E, 0x07,            # LD A,7        7T
+           0xD3, 0xFE,                    # OUT ($FE),A  11T
+           0x06, 0x03,                    # LD B,3        7T
+           0x10, 0xFE,                    # DJNZ $       13T,13T,8T
+           0x76)                          # HALT
+    h.regs[H.PC] = 0x8000
+    h.ports.record_writes = True
+    h.step(2)
+    eq(h.regs[H.A], 7, 'A after LD')
+    eq(h.tstates(), 18, 'T after LD + OUT')
+    eq(len(h.ports.writes), 1, 'one port write')
+    eq((h.ports.writes[0][1] & 0xFF, h.ports.writes[0][2]), (0xFE, 7), 'OUT ($FE),7 seen')
+    reason, n = h.run_until(0x8008)
+    eq(reason, 'target', 'reached HALT')
+    eq(h.regs[H.B], 0, 'DJNZ ran down')
+    eq(h.tstates(), 59, 'T-states exact through the DJNZ loop')
+    eq(h.pc(), 0x8008, 'stopped ON the target, not past it')
+
+
+def t_harness_ports():
+    H, h = fresh()
+    kp = mod('keyprobe')
+    prog = [0x01, 0xFE, 0xFE, 0xED, 0x78, 0x32, 0x00, 0x90,    # LD BC,$FEFE; IN A,(C); LD ($9000),A
+            0xDB, 0x1F, 0x32, 0x01, 0x90,                      # IN A,($1F);  LD ($9001),A
+            0x01, 0xFF, 0x7F, 0xED, 0x78, 0x32, 0x02, 0x90,    # LD BC,$7FFF; IN A,(C); LD ($9002),A
+            0x01, 0xFE, 0x00, 0xED, 0x78, 0x32, 0x03, 0x90,    # LD BC,$00FE; IN A,(C); LD ($9003),A
+            0x00]
+    h.poke(0x8100, *prog)
+    end = 0x8100 + len(prog) - 1
+    kp.press(h.ports, 'z')                                      # CAPS..V half-row, bit 1
+    h.ports.kempston = 0x10                                     # fire
+    h.regs[H.PC] = 0x8100
+    eq(h.run_until(end)[0], 'target', 'ran')
+    eq(h.peek(0x9000, 4), bytes([0xFD, 0x10, 0xFF, 0xFD]),
+       'half-row with Z, Kempston fire, unattached $FF, B=0 selects all rows')
+    assert 0xFEFE in h.ports.reads and 0x7FFF in h.ports.reads, h.ports.reads
+    h.ports.release_all()
+    h.regs[H.PC] = 0x8100
+    h.run_until(end)
+    eq(h.peek(0x9000, 4), bytes([0xFF, 0x00, 0xFF, 0xFF]), 'everything released')
+
+
+def t_harness_watch():
+    H, h = fresh()
+    h.poke(0x8200, 0x21, 0x00, 0x91,       # LD HL,$9100
+           0x36, 0x55,                     # LD (HL),$55
+           0x3E, 0x66,                     # LD A,$66
+           0x32, 0x50, 0x91,               # LD ($9150),A
+           0x32, 0x00, 0x92,               # LD ($9200),A   outside the window
+           0x00)
+    h.regs[H.PC] = 0x8200
+    h.memobj.watch(0x9100, 0x9200)
+    h.run_until(0x820D)
+    h.memobj.unwatch()
+    eq(h.memobj.log, [(0x8203, 0x9100, 0x55), (0x8207, 0x9150, 0x66)], 'write log (PC, addr, value)')
+    eq(h.peek(0x9200), b'\x66', 'unwatched write still lands')
+
+
+def t_harness_state():
+    H, h = fresh()
+    h.poke(0x9300, 0x11)
+    h.regs[H.PC] = 0x8000
+    s = h.save_state()
+    h.poke(0x9300, 0x22)
+    h.regs[H.PC] = 0x1234
+    h.load_state(s)
+    eq((h.peek(0x9300), h.pc()), (b'\x11', 0x8000), 'load_state is exact')
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'st.pkl')
+        h.save_state_file(p)
+        h.poke(0x9300, 0x33)
+        h.load_state_file(p)
+    eq(h.peek(0x9300), b'\x11', 'state file round trip')
+    snap = h.snapshot(0x9000, 0x9400)
+    h.poke(0x9300, 0x99)
+    eq(h.diff(snap, 0x9000, 0x9400), [(0x9300, 0x11, 0x99)], 'diff finds the one change')
+
+
+def t_harness_call():
+    H, h = fresh()
+    h.poke(0x8300, 0x3E, 0x42, 0xC9)                    # LD A,$42; RET
+    h.poke(0x8310, 0xE1, 0xC9)                          # POP HL; RET  (discards one return)
+    h.poke(0x8320, 0x18, 0xFE)                          # JR $
+    h.poke(0x8330, 0x7C, 0xC9)                          # LD A,H; RET
+    idx, t, n = h.call(0x8300)
+    eq((idx, t, h.regs[H.A]), (0, 17, 0x42), 'normal return: sentinel 0, 7+10 T')
+    eq(h.call(0x8310)[0], 1, 'one discarded return lands on sentinel 1')
+    eq(h.call(0x8320, limit=500)[0], None, 'runaway routine reports None')
+    h.call(0x8330, regs={'HL': 0x1234, 'A': 5})
+    eq(h.regs[H.A], 0x12, 'register seeding by name')
+
+
+def t_harness_find():
+    H, h = fresh()
+    h.poke(0x8000, 0x3E, 0x07, 0xD3, 0xFE)
+    eq(h.find_bytes(bytes([0x3E, 0x07, 0xD3, 0xFE])), [0x8000], 'find_bytes')
+    eq(h.find_bytes(bytes([0x3E, 0x07]), lo=0x8001), [], 'range respected')
+
+
+def t_harness_image():
+    H = mod('harness')
+    img = bytearray(0x10000)
+    img[0x8000] = 0xC9
+    img[0x0000] = 0x00                                    # a bogus ROM area, must be ignored
+    h = H.Harness(image=bytes(img), deck=False, entry=0x8000)
+    eq((h.pc(), h.peek(0x8000), h.peek(0)), (0x8000, b'\xC9', b'\xF3'), 'image bytes + real ROM')
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'img.bin')
+        open(p, 'wb').write(img)
+        h = H.Harness(image=p, deck=False, entry=0x8000)
+    eq(h.peek(0x8000), b'\xC9', 'image file')
+
+
+def t_harness_interrupts():
+    H, h = fresh()
+    h.poke(0x8400, 0x76, 0xC3, 0x00, 0x84)                # HALT; JP $8400
+    h.regs[H.PC] = 0x8400
+    h.regs[H.IM] = 1
+    h.regs[H.IFF] = 1
+    h.regs[H.IYh], h.regs[H.IYl] = 0x5C, 0x3A            # IY as the ROM ISR expects
+    for a in range(0x5C00, 0x5C08):
+        h.poke(a, 0xFF)                                   # KSTATE free, as after NEW
+    frames0 = h.peek16(0x5C78)
+    h.step(3000)
+    frames = h.peek16(0x5C78) - frames0
+    assert frames >= 2, f'FRAMES advanced {frames}'
+    assert h.halts_skipped > 0, 'fast HALT never engaged'
+    # one interrupt at T=0, then one per frame boundary: N interrupts span N-1 frames
+    assert h.tstates() >= (frames - 1) * H.FRAME_T, (h.tstates(), frames)
+    assert h.tstates() < (frames + 1) * H.FRAME_T, (h.tstates(), frames)
+
+
+def t_harness_contended():
+    H = mod('harness')
+    hc = H.Harness(image=False, deck=False, contended=True)
+    hp = H.Harness(image=False, deck=False, contended=False)
+    eq((hc.contended, hp.contended), (True, False), 'per-instance switch')
+    eq(type(hp.sim).__name__, 'Simulator', 'plain class')
+    eq(type(hc.sim).__name__, 'CMIOSimulator', 'contended class')
+    for h in (hc, hp):
+        h.poke(0x6000, *([0x00] * 128))                    # NOPs in contended RAM
+    # top border: no contention, identical clocks
+    for h in (hc, hp):
+        h.regs[H.PC] = 0x6000
+        h.regs[H.T] = 0
+        h.step(100, interrupts=False)
+    eq(hc.tstates(), hp.tstates(), 'no contention in the top border')
+    # inside the display period: the contended machine is slower
+    for h in (hc, hp):
+        h.regs[H.PC] = 0x6000
+        h.regs[H.T] = 14335 + 200
+        h.step(100, interrupts=False)
+    assert hc.tstates() > hp.tstates(), (hc.tstates(), hp.tstates())
+    # and the module default follows the manifest / PORT_CONTENDED
+    pc = mod('portconfig')
+    eq(H.Harness(image=False, deck=False).contended, pc.contended(), 'module default')
+
+
+def t_harness_paging():
+    """The opt-in $7FFD port and AY on the 48K machine: banks swap at $C000 on
+    an OUT that decodes as $7FFD (not on the ULA's $FE), bit 5 locks, ROM 0 is
+    counted (never modelled), the AY latches, stores and reads back masked;
+    every row carries the OUT's own PC and the T it began at; a paged state
+    round-trips, a 48K state resets the banks; off by default."""
+    H, h = fresh()
+    eq((h.paging, h.ports.paging), (None, None), 'paging off by default')
+    P = h.enable_paging(0x10)
+    prog = [0x3E, 0xAA, 0x32, 0x00, 0xC0,          # 8000 LD A,$AA / LD ($C000),A      bank 0
+            0x01, 0xFD, 0x7F, 0x3E, 0x11,          # 8005 LD BC,$7FFD / LD A,$11
+            0xED, 0x79,                            # 800A OUT (C),A                   bank 1
+            0x3E, 0xBB, 0x32, 0x00, 0xC0,          # 800C LD A,$BB / LD ($C000),A      bank 1
+            0x3E, 0x07, 0xD3, 0xFE,                # 8011 LD A,7 / OUT ($FE),A         the ULA, port $07FE: no page
+            0x3A, 0x00, 0xC0, 0x32, 0x00, 0x90,    # 8015 LD A,($C000) / LD ($9000),A
+            0x3E, 0x10, 0xED, 0x79,                # 801B LD A,$10 / OUT (C),A         bank 0
+            0x3A, 0x00, 0xC0, 0x32, 0x01, 0x90,    # 801F LD A,($C000) / LD ($9001),A
+            0x3E, 0x01, 0xED, 0x79,                # 8025 LD A,$01 / OUT (C),A         bank 1, ROM 0: counted
+            0x01, 0xFD, 0xFF, 0x3E, 0x01,          # 8029 LD BC,$FFFD / LD A,1
+            0xED, 0x79,                            # 802E OUT (C),A                   select R1
+            0x06, 0xBF, 0x3E, 0xFF, 0xED, 0x79,    # 8030 LD B,$BF / LD A,$FF / OUT (C),A   R1 := $FF
+            0x06, 0xFF, 0xED, 0x78,                # 8036 LD B,$FF / IN A,(C)          R1 reads $0F
+            0x32, 0x02, 0x90,                      # 803A LD ($9002),A
+            0x01, 0xFD, 0x7F, 0x3E, 0x30,          # 803D LD BC,$7FFD / LD A,$30
+            0xED, 0x79,                            # 8042 OUT (C),A                   bank 0 + LOCK
+            0x3E, 0x11, 0xED, 0x79,                # 8044 LD A,$11 / OUT (C),A         refused
+            0x3A, 0x00, 0xC0, 0x32, 0x03, 0x90,    # 8048 LD A,($C000) / LD ($9003),A
+            0x00]                                  # 804E
+    h.poke(0x8000, *prog)
+    h.regs[H.PC] = 0x8000
+    starts = {}
+    while h.pc() != 0x804E:
+        if h.peek(h.pc(), 2) in (b'\xED\x79', b'\xED\x78'):
+            starts[h.pc()] = h.tstates()
+        h.step(1, interrupts=False)
+    eq(h.peek(0x9000, 4), bytes([0xBB, 0xAA, 0x0F, 0xAA]),
+       'bank 1 at $C000, bank 0 back, R1 read masked, the locked OUT refused')
+    eq([r[1:] for r in P.p7ffd], [[0x800A, 0x11, True], [0x801D, 0x10, True], [0x8027, 0x01, True],
+                                  [0x8042, 0x30, True], [0x8046, 0x11, False]], '$7FFD rows: pc, value, applied')
+    eq([r[0] for r in P.p7ffd], [starts[r[1]] for r in P.p7ffd], '$7FFD rows: the OUT\'s first T')
+    eq(P.ay_log, [[starts[0x8034], 0x8034, 1, 0xFF]], 'the AY data row')
+    eq(P.ay_reads, [[starts[0x8038], 0x8038, 1, 0x0F]], 'the AY read row')
+    eq((P.cur, P.locked, P.unsupported, P.swaps), (0, True, {'rom0': 1}, 4), 'bank, lock, ROM 0 counted, swaps')
+    eq((P.bank(1)[0], P.bank(0)[0], h.peek(0xC000)), (0xBB, 0xAA, b'\xAA'), 'bank() reads either, wherever it is')
+    s = h.save_state()
+    eq(len(s), 4, 'a paged state carries the banks')
+    P.page(1)
+    h.poke(0xC000, 0x77)
+    h.load_state(s)
+    eq((P.cur, P.bank(1)[0], h.peek(0xC000), P.ay[1], P.locked), (0, 0xBB, b'\xAA', 0xFF, True), 'paged state round trip')
+    H2, h2 = fresh()
+    h2.load_state(s)
+    eq((h2.paging is not None, h2.paging.bank(1)[0]), (True, 0xBB), 'a paged state turns paging on')
+    h.load_state(s[:3])
+    eq((P.cur, P.bank(1)[0], P.locked, P.ay[1]), (0, 0, False, 0), 'a 48K state resets the shim')
+
+
+def h128(**kw):
+    """A blank 128K machine (no snapshot, no manifest)."""
+    H = mod('harness128')
+    return H, H.Harness128(snapshot=False, **kw)
+
+
+def t_harness128_machine():
+    """The 128K: its frame and interrupt, the ROM $7FFD's bit 4 selects, the
+    48K snapshot refused; paging on the 128K decode (bank 1 at $C000, not on
+    the ULA's $FE), the lock, the AY's rows and masked read, the speaker's edge
+    -- each row at its OUT's first T and PC; a state round trip."""
+    H, h = h128()
+    eq((H.FRAME_T, H.INT_ACTIVE, H.CPU_HZ), (70908, 36, 3546900), 'the 128K frame, interrupt and clock')
+    eq((h.peek(0, 3), h.paged()), (b'\xF3\xAF\x11', 0), '$10: ROM 1 (48 BASIC), bank 0')
+    eq(h128(out7ffd=0)[1].peek(0, 3), b'\xF3\x01\x2B', '$00: ROM 0 (the 128 editor)')
+    from skoolkit.snapshot import write_snapshot
+    with tempfile.TemporaryDirectory() as d:
+        sp = os.path.join(d, 's48.z80')
+        write_snapshot(sp, bytes(0xC000), ('pc=32768',), ())
+        try:
+            H.Harness128(snapshot=sp)
+            raise AssertionError('a 48K snapshot was accepted')
+        except RuntimeError as e:
+            eq('48K snapshot' in str(e), True, 'the 48K snapshot refused')
+    prog = [0x3E, 0xAA, 0x32, 0x00, 0xC0,          # 8000 LD A,$AA / LD ($C000),A      bank 0
+            0x01, 0xFD, 0x7F, 0x3E, 0x11,          # 8005 LD BC,$7FFD / LD A,$11
+            0xED, 0x79,                            # 800A OUT (C),A                   bank 1
+            0x3E, 0xBB, 0x32, 0x00, 0xC0,          # 800C LD A,$BB / LD ($C000),A      bank 1
+            0x3E, 0x17, 0xD3, 0xFE,                # 8011 LD A,$17 / OUT ($FE),A       ULA $17FE: border 7, an EDGE
+            0x3A, 0x00, 0xC0, 0x32, 0x00, 0x90,    # 8015 LD A,($C000) / LD ($9000),A
+            0x01, 0xFD, 0xFF, 0x3E, 0x09,          # 801B LD BC,$FFFD / LD A,9
+            0xED, 0x79,                            # 8020 OUT (C),A                   select R9
+            0x06, 0xBF, 0x3E, 0xFF, 0xED, 0x79,    # 8022 LD B,$BF / LD A,$FF / OUT (C),A   R9 := $FF
+            0x06, 0xFF, 0xED, 0x78,                # 8028 LD B,$FF / IN A,(C)          R9 reads $1F
+            0x32, 0x01, 0x90,                      # 802C LD ($9001),A
+            0x01, 0xFD, 0x7F, 0x3E, 0x30,          # 802F LD BC,$7FFD / LD A,$30
+            0xED, 0x79,                            # 8034 OUT (C),A                   bank 0 + LOCK
+            0x3E, 0x11, 0xED, 0x79,                # 8036 LD A,$11 / OUT (C),A         refused
+            0x3A, 0x00, 0xC0, 0x32, 0x02, 0x90,    # 803A LD A,($C000) / LD ($9002),A
+            0x00]                                  # 8040
+    h.poke(0x8000, *prog)
+    h.regs[H.PC] = 0x8000
+    starts = {}
+    while h.pc() != 0x8040:
+        if h.peek(h.pc(), 2) in (b'\xED\x79', b'\xED\x78') or h.peek(h.pc()) == b'\xD3':
+            starts[h.pc()] = h.tstates()
+        h.step(1, interrupts=False)
+    eq(h.peek(0x9000, 3), bytes([0xBB, 0x1F, 0xAA]), 'bank 1 at $C000, R9 read masked, the locked OUT refused')
+    eq((h.bank_peek(0, 0xC000), h.bank_peek(1, 0xC000), h.paged()), (b'\xAA', b'\xBB', 0), 'the banks')
+    eq([r[2:5] + [r[5]] for r in h.p7ffd_log], [[0x800A, 0x11, starts[0x800A], True], [0x8034, 0x30, starts[0x8034], True],
+                                               [0x8038, 0x11, starts[0x8038], False]], '$7FFD rows: pc, value, T, applied')
+    eq([r[2:6] for r in h.ay_log], [[0x8026, 9, 0xFF, starts[0x8026]]], 'the AY row')
+    eq([r[2:6] for r in h.ay_reads], [[0x802A, 9, 0x1F, starts[0x802A]]], 'the AY read row')
+    eq([r[2:5] for r in h.spk_log], [[0x8013, 0x17, starts[0x8013]]], 'the speaker edge')
+    eq((h.ports.border, h.fe_count), (7, {0x8013: 1}), 'border and the OUT count')
+    eq(all(r[0] == r[-1 if len(r) == 5 else 4] // H.FRAME_T for r in h.spk_log), True, 'frame = T // 70,908')
+    s = h.save_state()
+    h.bank_poke(1, 0xC000, 0x77)
+    h.poke(0x9000, 0)
+    h.ports.ay[9], h.ports.outfffd, h.ports.border = 0, 3, 2
+    h.load_state(s)
+    eq((h.peek(0x9000), h.bank_peek(1, 0xC000), h.ports.ay[9], h.ports.outfffd, h.ports.border, h.o7ffd()),
+       (b'\xBB', b'\xBB', 0xFF, 9, 7, 0x30), 'state round trip (RAM, banks, the AY and its latch, the border, $7FFD)')
+
+
+ISR128 = [0xF5, 0xC5,                          # 8200 PUSH AF / PUSH BC
+          0x3A, 0x00, 0x90, 0x3C, 0x32, 0x00, 0x90,   # LD A,($9000) / INC A / LD ($9000),A   the frame count
+          0x01, 0xFD, 0xFF, 0x3E, 0x08, 0xED, 0x79,   # LD BC,$FFFD / LD A,8 / OUT (C),A        select R8
+          0x06, 0xBF, 0x3A, 0x00, 0x90, 0xE6, 0x0F, 0xED, 0x79,   # LD B,$BF / LD A,(count) / AND 15 / OUT (C),A
+          0x3A, 0x00, 0x90, 0xE6, 0x01, 0xF6, 0x10,   # LD A,(count) / AND 1 / OR $10
+          0x01, 0xFD, 0x7F, 0xED, 0x79,               # LD BC,$7FFD / OUT (C),A      banks 0 and 1 by turns
+          0x3A, 0x00, 0x90, 0xE6, 0x10, 0xD3, 0xFE,   # LD A,(count) / AND $10 / OUT ($FE),A   an edge every 16
+          0xC1, 0xF1, 0xFB, 0xED, 0x4D]               # POP BC / POP AF / EI / RETI
+MAIN128 = [0x31, 0x00, 0x8F, 0xED, 0x5E,       # 8000 LD SP,$8F00 / IM 2
+           0x3E, 0x80, 0xED, 0x47, 0xFB,       # LD A,$80 / LD I,A / EI
+           0x21, 0x00, 0xC0, 0x34,             # 800A LD HL,$C000 / INC (HL)     the paged bank (1 is contended)
+           0x21, 0x00, 0x40, 0x34,             # LD HL,$4000 / INC (HL)          the screen
+           0x06, 0x00, 0x10, 0xFE,             # LD B,0 / DJNZ $                 a contended-free stretch
+           0x76, 0x18, 0xF0]                   # 8016 HALT / JR $800A
+
+
+def t_harness128_engines():
+    """IM 2, a HALT loop, banks 0 and 1 paged by turns (1 contended), the
+    screen, the AY and the speaker over 12 frames: the C engine and the
+    Python one identical -- every register, T, all eight banks and every log
+    -- and the HALT skip identical to executing every HALT cycle."""
+    H = mod('harness128')
+    runs = {}
+    for engine in ('py', 'c'):
+        if engine == 'c' and H.CCMIOSimulator is None:
+            print('      (no CCMIOSimulator in this SkoolKit: the C engine is not checked)')
+            continue
+        for fast in (True, False):
+            h = H.Harness128(snapshot=False, engine=engine)
+            h.poke(0x8000, *MAIN128)
+            h.poke(0x8200, *ISR128)
+            h.poke(0x80FF, 0x00, 0x82)                       # the IM 2 vector at I*256 + $FF
+            h.regs[H.PC] = 0x8000
+            h.fast_halt = fast
+            fr = []
+            h.frame_hooks.append(lambda hh, f, fr=fr: fr.append((f, hh.tstates(), hh.regs[H.R], hh.pc())))
+            h.run_frames(12)
+            m = h.sim.memory
+            runs[(engine, fast)] = (list(h.regs), [bytes(b) for b in m.banks], h.o7ffd(),
+                                    [list(x) for x in h.ay_log], h.p7ffd_log, h.spk_log, h.fe_count, fr,
+                                    h.halts_skipped > 0, h.slow_halts)
+    ref = runs[('py', False)]
+    eq(ref[1][2][0x1000], 11, 'frames 1..11 interrupted (frame 0\'s passed before the EI; the run ends at 12\'s start)')
+    eq((len(ref[3]), len(ref[4]), ref[8]), (11, 11, False), 'an AY row and a $7FFD row a frame; no skip when slow')
+    eq((ref[1][0][0] > 0, ref[1][1][0] > 0), (True, True), 'both banks incremented by turns')
+    fast = runs[('py', True)]
+    eq(fast[8], True, 'the fast HALT engaged')
+    eq(fast[:8], ref[:8], 'the HALT skip == every HALT cycle executed (registers incl. R, T, banks, logs, the frame boundaries)')
+    for k in (('c', True), ('c', False)):
+        if k in runs:
+            eq(runs[k][:8], ref[:8], f'engine c (fast={k[1]}) == engine py')
+    # a HALT whose refetch is contended ($6016) is never skipped: each 4-T cycle waits on the ULA
+    got = []
+    for fast in (True, False):
+        h = H.Harness128(snapshot=False)
+        h.poke(0x6000, *MAIN128)
+        h.poke(0x8200, *ISR128)
+        h.poke(0x80FF, 0x00, 0x82)
+        h.regs[H.PC] = 0x6000
+        h.fast_halt = fast
+        h.run_frames(4)
+        got.append((list(h.regs), bytes(h.sim.memory.banks[2]), h.halts_skipped, h.slow_halts > 0))
+    eq((got[0][2], got[0][3]), (0, True), 'the contended HALT ran every cycle with fast_halt on')
+    eq(got[0][:2], got[1][:2], 'and equals the slow run')
+    # at $C000 it is the paged bank that decides: bank 1 contends (never skipped), bank 0 does not (skipped)
+    for o, skips in ((0x11, False), (0x10, True)):
+        got = []
+        for fast in (True, False):
+            h = H.Harness128(snapshot=False)
+            h.poke(0x8000, 0x01, 0xFD, 0x7F, 0x3E, o, 0xED, 0x79, 0xC3, 0x00, 0xC0)   # page bank o & 7 / JP $C000
+            h.poke(0x8300, 0xF5, 0x3A, 0x00, 0x90, 0x3C, 0x32, 0x00, 0x90, 0xF1, 0xFB, 0xED, 0x4D)
+            h.poke(0x80FF, 0x00, 0x83)
+            h.bank_poke(o & 7, 0xC000, 0x31, 0x00, 0x8F, 0xED, 0x5E, 0x3E, 0x80, 0xED, 0x47, 0xFB,   # SP / IM 2 / I / EI
+                        0x21, 0x00, 0x40, 0x34, 0x76, 0x18, 0xFA)                            # INC ($4000) / HALT / JR
+            h.regs[H.PC] = 0x8000
+            h.fast_halt = fast
+            h.run_frames(4)
+            got.append((list(h.regs), bytes(h.sim.memory.banks[2]), bytes(h.sim.memory.banks[5]), h.halts_skipped > 0))
+        eq(got[0][3], skips, f'bank {o & 7} at $C000: the HALT skipped = {skips}')
+        eq(got[0][:3], got[1][:3], f'bank {o & 7} at $C000: equal to the slow run')
+
+
+def t_harness128_hooks():
+    """add_hook fires as PC arrives (before the instruction), once per arrival;
+    stop_now ends the run there and resuming does not re-fire it; on_return
+    fires once, at the CALL's return; frame_hooks run at each frame's first
+    boundary, before that frame's interrupt (IFF as the frame starts)."""
+    H, h = h128()
+    h.poke(0x8000, *MAIN128)
+    h.poke(0x8200, *ISR128)
+    h.poke(0x80FF, 0x00, 0x82)
+    h.regs[H.PC] = 0x8000
+    ent, rets, frames = [], [], []
+
+    def at_isr(hh, pc, prev):
+        ent.append((hh.frame(), hh.t_in_frame(), hh.peek(0x9000)[0]))
+        hh.on_return(lambda h2: rets.append((h2.pc(), h2.regs[H.SP], h2.peek(0x9000)[0])))
+        if len(ent) == 3:
+            hh.stop_now = 'third'
+    h.add_hook(0x8200, at_isr)
+    h.frame_hooks.append(lambda hh, f: frames.append((f, hh.regs[H.IFF], hh.pc())))
+    eq(h.run_frames(10) > 0 and h.pc(), 0x8200, 'stop_now left PC at the hook')
+    eq(len(ent), 3, 'stopped at the third ISR entry')
+    eq(h.run_to_frame(7) > 0 and len(ent), 6, 'resuming does not re-fire the stopped hook (frames 4..6)')
+    eq([e[2] for e in ent], [0, 1, 2, 3, 4, 5], 'the hook ran BEFORE the ISR\'s first instruction each time')
+    eq([r[2] for r in rets], [1, 2, 3, 4, 5, 6], 'on_return: once per CALL, after the ISR')
+    eq({(r[0], r[1]) for r in rets}, {(0x8017, 0x8F00)}, 'on_return at the return address with SP back above it')
+    eq([f[0] for f in frames], list(range(1, 8)), 'a frame hook per frame')
+    eq({(f[1], f[2]) for f in frames}, {(1, 0x8017)}, 'at the boundary, before the interrupt: IFF 1, halted at $8016')
+    # on_return keys on the stack depth: a recursion returns to $8114 at two depths
+    H, h = h128()
+    h.poke(0x8100, 0xCD, 0x10, 0x81, 0x18, 0xFE)        # 8100 CALL $8110 / JR $
+    h.poke(0x8110, 0x05, 0x28, 0x03,                    # 8110 DEC B / JR z,$8116
+           0xCD, 0x10, 0x81,                            # 8113 CALL $8110   (returns to $8116)
+           0xC9)                                        # 8116 RET
+    h.regs[H.PC], h.regs[H.SP], h.regs[H.B] = 0x8100, 0x9000, 3
+    n, fired = [0], []
+
+    def at_entry(hh, pc, prev):
+        n[0] += 1
+        if n[0] == 2:                                   # the first inner call: SP $8FFC, returns at $8FFE
+            hh.on_return(lambda h2: fired.append((h2.pc(), h2.regs[H.SP])))
+    h.add_hook(0x8110, at_entry)
+    eq(h.run_until(0x8103, limit=100, interrupts=False)[0], 'target', 'the recursion returned')
+    eq((n[0], fired), (3, [(0x8116, 0x8FFE)]), 'on_return fired at ITS depth, not at the deeper return to $8116')
+
+
+def t_readwatch_swap():
+    H, h = fresh()
+    rw = mod('readwatch')
+    h.poke(0x8500, 0x3A, 0x00, 0x92, 0x3A, 0x01, 0x92, 0xC3, 0x00, 0x85)   # LD A,($9200); LD A,($9201); JP
+    h.regs[H.PC] = 0x8500
+    rm = rw.ReadMem(h.memobj.m, h.sim, 0x9200, 0x9300)
+    rw.watch(h, rm, frames=1)
+    assert rm.by_addr[0x9200] > 100 and rm.by_addr[0x9201] > 100, dict(rm.by_addr)
+    eq(set(rm.by_pc), {0x8500, 0x8503}, 'reads attributed to the reading PCs')
+    eq(set(rm.by_addr), {0x9200, 0x9201}, 'only the window is counted')
+
+
+# ---------------------------------------------------------------------------
+# phases 3-4: walk.py / grepbytes.py / adis.py / strings.py / hexdump.py
+# ---------------------------------------------------------------------------
+def walk_image():
+    mem = bytearray(0x10000)
+    mem[0x8000:0x800B] = bytes([0x3E, 0x07, 0xD3, 0xFE, 0xCD, 0x00, 0x81, 0xD7, 0xC3, 0x00, 0x80])
+    mem[0x800B] = 0xFF                                    # stray data byte, never reached
+    mem[0x8100:0x8107] = bytes([0x06, 0x03, 0x10, 0xFE, 0xDB, 0xFE, 0xC9])
+    mem[0x8200:0x8203] = bytes([0xED, 0x56, 0x76])       # IM 1; HALT
+    return mem
+
+
+def t_walk():
+    walk = mod('walk')
+    mem = walk_image()
+    seen, covered, calls, jumps = walk.walk(mem, [0x8000, 0x8200])
+    eq(seen, {0x8000, 0x8002, 0x8004, 0x8007, 0x8008, 0x8100, 0x8102, 0x8104, 0x8106, 0x8200, 0x8202},
+       'instruction boundaries')
+    eq(len(covered), 21, 'bytes covered')
+    assert 0x800B not in covered, 'data byte wrongly covered'
+    eq(calls, {0x8100: {0x8004}, 0x10: {0x8007}}, 'call graph incl. RST')
+    eq(jumps, {0x8000: {0x8008}, 0x8102: {0x8102}}, 'jumps incl. DJNZ self-loop')
+    eq(walk.regions(covered), [(0x8000, 0x800A), (0x8100, 0x8106), (0x8200, 0x8202)], 'regions')
+    po, pi, rc, hl, ims = walk.inventory(mem, seen)
+    eq(po, [(0x8002, 0xFE, 'OUT (n),A')], 'port writes')
+    eq(pi, [(0x8104, 0xFE, 'IN A,(n)')], 'port reads')
+    eq(rc, [(0x8007, 0x10)], 'transfers below $4000')
+    eq(hl, [0x8202], 'HALTs')
+    eq([a for a, _ in ims], [0x8200], 'IM instructions')
+
+
+def t_grepbytes():
+    gb = mod('grepbytes')
+    mem = bytearray(0x10000)
+    mem[0x8000:0x8005] = bytes([0x21, 0x00, 0x90, 0xD3, 0xFE])
+    eq(gb.search(mem, bytes([0x21, 0x00, 0x90])), [0x8000], 'search')
+    eq(gb.search(mem, bytes([0x00]), 0x8000, 0x8003), [0x8001], 'ranged search')
+    eq(gb.confirm(mem, 0x8000), 2, 'instruction boundary confirmed')
+    eq(gb.confirm(mem, 0x8001), None, 'operand byte is NOT a boundary')
+
+
+def t_adis():
+    adis = mod('adis')
+    mem = walk_image()
+    syms = adis.load_syms()
+    eq(syms[0x0556], 'ROM_LD_BYTES', 'ROM symbols present')
+    eq(adis.substitute('CALL 0x0556', syms), 'CALL ROM_LD_BYTES', 'substitution')
+    syms[0x8100] = 'sub'
+    out = io.StringIO()
+    adis.disasm(mem, 0x8000, 5, syms=syms,
+                regions=[{'start': 0x8000, 'end': 0x80FF, 'desc': 'main', 'kind': 'code'}], out=out)
+    text = out.getvalue()
+    assert 'CALL sub' in text, text
+    assert '8000  3E 07' in text and 'RST' in text and '; ===== 8000-80FF  main (code)' in text, text
+    out = io.StringIO()
+    adis.disasm(mem, 0x8100, 1, syms=syms,
+                regions=[{'start': 0x8100, 'end': 0x810F, 'desc': 'table', 'kind': 'data'}], out=out)
+    assert 'sub:' in out.getvalue() and 'DEFB $06,$03' in out.getvalue(), out.getvalue()
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'regions.json')
+        json.dump([{'start': '0x8100', 'end': '$81FF', 'desc': 'x', 'kind': 'code'}], open(p, 'w'))
+        r = adis.load_regions(p)
+        eq((r[0]['start'], r[0]['end']), (0x8100, 0x81FF), 'hex strings in regions.json')
+        q = os.path.join(d, 'symbols.json')
+        adis.save_sym('main', 0x8000, q)
+        eq(adis.load_syms(q)[0x8000], 'main', 'symbols.json round trip')
+    eq(adis.load_regions(os.path.join(HERE, 'regions.json')), [], 'shipped regions.json is empty')
+    assert 0x8000 not in adis.load_syms(os.path.join(HERE, 'symbols.json')), 'shipped symbols.json is empty'
+
+
+def t_strings_hexdump():
+    st = mod('strings')
+    hd = mod('hexdump')
+    mem = bytearray(0x10000)
+    mem[0x9000:0x9005] = b'HELLO'
+    mem[0x9010:0x9015] = b'WORL' + bytes([ord('D') | 0x80])
+    eq(st.runs(mem, 0x8000, 0xA000, 5), [(0x9000, 'HELLO')], 'ascii runs')
+    eq(st.runs_hi(mem, 0x8000, 0xA000, 5), [(0x9000, 'HELLO'), (0x9010, 'WORLD')], 'bit-7 runs')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        hd.dump(b'ABC', base=0x8000)
+    line = out.getvalue().rstrip('\n')
+    assert line.startswith('8000  41 42 43') and line.endswith('|ABC|'), line
+
+
+# ---------------------------------------------------------------------------
+# phase 5: contact.py / speckle.py
+# ---------------------------------------------------------------------------
+def t_speckle():
+    sp = mod('speckle')
+    solid = sp.score(bytes([0xFF]) * 32, 0, 2, 16)
+    eq((solid['density'], solid['iso'], solid['single_runs'], solid['speckle']), (1.0, 0, 0, 0.0), 'solid = art')
+    board = sp.score(bytes([0x55, 0x55, 0xAA, 0xAA]) * 8, 0, 2, 16)
+    eq((board['density'], board['iso'], board['single_runs'], board['speckle']), (0.5, 1.0, 1.0, 2.0), 'checkerboard = noise')
+    eq(sp.score(bytes(32), 0, 2, 16), None, 'empty block')
+    eq(sp.score(bytes(16), 0, 2, 16), None, 'short block')
+
+
+def t_contact():
+    ct = mod('contact')
+    data = bytearray(32)
+    data[0], data[1] = 0x80, 0x01                          # row 0: leftmost and rightmost pixel
+    imgs = ct.cells_row_major(bytes(data), 2, 16)
+    eq(len(imgs), 1, 'one cell')
+    eq(imgs[0].size, (16, 16), 'cell size')
+    px = imgs[0].load()
+    eq((px[0, 0], px[15, 0], px[1, 0]), ((255, 255, 255), (255, 255, 255), (0, 0, 0)), 'row-major pixels')
+    data = bytes([0xFF] * 8) + bytes(24)                   # cell-major: first 8x8 cell solid
+    px = ct.cells_cell_major(data, 2, 16)[0].load()
+    eq((px[7, 7], px[8, 0], px[0, 8]), ((255, 255, 255), (0, 0, 0), (0, 0, 0)), 'cell-major pixels')
+    eq(ct.sheet(imgs, 4, 'row').size, (72, 28), 'sheet geometry')
+
+
+# ---------------------------------------------------------------------------
+# keyprobe.py exports and portconfig.py
+# ---------------------------------------------------------------------------
+def t_keyprobe_exports():
+    kp = mod('keyprobe')
+    eq(len(kp.KEYS), 40, '40 keys')
+    eq(len({n for n, _, _ in kp.KEYS}), 40, 'unique names')
+    eq(kp.KEYS[0], ('CAPS', 0xFE, 0), 'first key')
+    eq(kp.KEYS[-1], ('B', 0x7F, 4), 'last key')
+    eq((kp.keymask(0), kp.keymask(4)), (0xFE, 0xEF), 'keymask')
+    eq(kp.KEYMAP['SPACE'], (0x7F, 0), 'KEYMAP')
+    eq(kp.parse_script('40:,60:SPACE,60:d+z'), [(40, []), (60, ['SPACE']), (60, ['D', 'Z'])], 'script')
+    H = mod('harness')
+    p = H.Ports()
+    kp.press(p, 'Q')
+    eq(p.read_port(None, 0xFBFE), 0xFE, 'Q pressed reads bit 0 clear on $FB half-row')
+    eq(p.read_port(None, 0xFDFE), 0xFF, 'other half-row untouched')
+
+
+def t_portconfig():
+    pc = mod('portconfig')
+    eq(pc.num('0x8400'), 0x8400, 'hex string')
+    eq(pc.num('$8400'), 0x8400, 'dollar string')
+    eq(pc.num(33792), 33792, 'int')
+    eq(pc.num(None), None, 'None passes')
+    default_root = pc.root()
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'port.json')
+            json.dump({'tape': {'path': 'tape/x.tzx', 'entry': '0x8400',
+                                'blocks': [{'dest': '0x8600', 'len': '0x5210', 'flag': '0x80'},
+                                           {'dest': 33792, 'block': 6}],
+                                'copies': [{'src': '0x5CF1', 'dst': '0xFF00', 'len': '0x100'}]},
+                       'z80': {'contended': False}}, open(p, 'w'))
+            pc.reload(p)
+            eq(pc.manifest_path(), p, 'manifest path')
+            eq(pc.root(), d, 'root is the manifest directory')
+            eq(pc.path('build/x.bin'), os.path.normpath(os.path.join(d, 'build/x.bin')), 'path()')
+            eq(pc.num(pc.get('tape', 'entry')), 0x8400, 'entry')
+            eq(pc.get('tape', 'prog'), '0x5CCB', 'default filled in beside given keys')
+            eq(pc.blocks_spec(), [{'dest': 0x8600, 'len': 0x5210, 'flag': 0x80, 'block': None},
+                                  {'dest': 0x8400, 'len': None, 'flag': None, 'block': 6}], 'blocks')
+            eq(pc.copies_spec(), [(0x5CF1, 0xFF00, 0x100)], 'copies')
+            eq(pc.contended(), False, 'manifest contention')
+            os.environ['PORT_CONTENDED'] = '1'
+            eq(pc.contended(), True, 'env overrides manifest')
+            del os.environ['PORT_CONTENDED']
+            eq(pc.state_path('foo'), os.path.join(pc.path('build'), 'foo.pkl'), 'state_path')
+            eq(pc.state_path(p), p, 'existing path passes through')
+            try:
+                pc.need('tape', 'tape_call_pc', what='x')
+            except SystemExit as e:
+                assert 'tape.tape_call_pc' in str(e) and p in str(e), e
+            else:
+                raise AssertionError('need() did not fail on a null key')
+            pc.reload(os.path.join(d, 'absent.json'))
+            eq(pc.manifest_path(), None, 'absent manifest -> None')
+            eq(pc.cfg()['tape']['entry'], None, 'defaults without a manifest')
+            eq(pc.blocks_spec(), 'auto', 'no blocks -> auto')
+    finally:
+        pc.reload()
+    eq(pc.root(), default_root, 'default manifest restored')
+
+
+def t_harness_snapshot():
+    H = mod('harness')
+    from skoolkit.snapshot import write_snapshot
+    with tempfile.TemporaryDirectory() as d:
+        sp = os.path.join(d, 'snap.z80')
+        ram = bytearray(0xC000)                      # $4000..$FFFF
+        ram[0x8000 - 0x4000] = 0xC9                  # a RET at $8000
+        write_snapshot(sp, bytes(ram), ('pc=32768', 'sp=32000', 'bc=4660'), ('im=2',))
+        h = H.Harness(snapshot=sp, deck=False)
+        eq(h.pc(), 0x8000, 'snapshot PC')
+        eq(h.regs[H.SP], 32000, 'snapshot SP')
+        eq(h.regs[H.IM], 2, 'snapshot IM')
+        eq(h.peek(0x8000), bytes([0xC9]), 'snapshot RAM byte')
+        eq(h.peek(0, 3), bytes([0xF3, 0xAF, 0x11]), 'real ROM under the snapshot')
+    hb = H.Harness(snapshot=False, deck=False)
+    eq((hb.peek(0x8000), hb.pc()), (bytes([0]), 0), 'snapshot=False: blank RAM, no manifest fallback')
+
+
+def t_bleepload():
+    B = mod('bleepload')
+
+    def turbo(payload):
+        hdr = (le16(2168) + le16(667) + le16(735) + le16(855) + le16(1710)
+               + le16(20) + bytes([8]) + le16(50))
+        ln = len(payload)
+        return bytes([0x11]) + hdr + bytes([ln & 0xFF, (ln >> 8) & 0xFF, (ln >> 16) & 0xFF]) + payload
+
+    def bl(gid, blk, dest, fill):
+        body = bytes([gid]) + bytes([fill]) * 256 + bytes([blk, dest & 0xFF, dest >> 8]) + bytes([0xC9])
+        return turbo(rom_block(0xFF, body))
+
+    tzxbytes = (bytes([0x5A, 0x58, 0x54, 0x61, 0x70, 0x65, 0x21, 0x1A]) + bytes([1, 20])
+                + bl(0x64, 0, 0x8000, 0xAA) + bl(0x64, 1, 0x8100, 0xBB)
+                + bl(0x65, 0, 0x9000, 0x01))          # a later group: stored XORed by dest-hi ($90)
+    with tempfile.TemporaryDirectory() as d:
+        tp = os.path.join(d, 'bl.tzx')
+        open(tp, 'wb').write(tzxbytes)
+        blocks = B.decode(tp)
+        eq(len(blocks), 3, 'bleepload block count')
+        eq((blocks[0]['gid'], blocks[0]['blk'], blocks[0]['dest']), (0x64, 0, 0x8000), 'block framing')
+        eq(blocks[1]['dest'], 0x8100, 'second block dest')
+        img, loaded = B.build_naive(blocks)           # first_group $64, XOR later groups on
+        eq(img[0x8000], 0xAA, 'group-1 data placed verbatim')
+        eq(img[0x9000], 0x01 ^ 0x90, 'later-group data de-XORed by dest high byte')
+        eq((loaded[0x8000], loaded[0x9000]), (1, 1), 'loaded-page mask set')
+
+
+def t_bleepload_driver():
+    """A synthetic tape carrying everything the driver model reads (the shape
+    measured on eight Firebird tapes): the 512-byte stub with its CP $64, the
+    key page XORed with the stub's two pages, a region encrypted with K that
+    carries a stage-2 copy loop keyed on a CONSTANT, the driver page (clear
+    head, K-encrypted tail: LDIR / CALL $FA00 / LDDR / a fill / LD SP / JP),
+    the parameter block, a later group XORed with that constant -- and a
+    truncated turbo block, which must be skipped, not crash."""
+    B = mod('bleepload')
+
+    def turbo(payload):
+        hdr = (le16(2168) + le16(667) + le16(735) + le16(855) + le16(1710)
+               + le16(20) + bytes([8]) + le16(50))
+        ln = len(payload)
+        return bytes([0x11]) + hdr + bytes([ln & 0xFF, (ln >> 8) & 0xFF, (ln >> 16) & 0xFF]) + payload
+
+    def bl(gid, blk, dest, data):
+        return turbo(rom_block(0xFF, bytes([gid]) + bytes(data) + bytes([blk, dest & 0xFF, dest >> 8, 0xC9])))
+
+    def variant(stub_addr, buf, s2):
+        """Build and check one tape shape: the stub at stub_addr reading blocks
+        into buf, stage 2 entered at s2 (the two shapes seen: $CD00/$FE00/$FA00
+        on twelve tapes, $DA00/$6D00/$FC00 on Empire)."""
+        pg = stub_addr >> 8
+        stub = bytearray((i * 13 + 7) & 0xFF for i in range(512))
+        stub[0x1E:0x25] = b'\x3a' + le16(buf) + b'\xfe\x64\x20\xf6'    # LD A,(buf) / CP $64 / JR NZ
+        K = bytes((i * 5 + 1) & 0xFF for i in range(256))
+        keypage = bytes(K[i] ^ stub[i] ^ stub[256 + i] for i in range(256))
+        stage2 = bytearray((i * 3) & 0xFF for i in range(256))
+        stage2[0x30:0x39] = b'\x21' + le16(buf + 1) + b'\x01\x00\x01\x3e\x21\xae'   # LD HL,buf+1 / LD BC,$100 / LD A,$21 / XOR (HL)
+        payload = bytes(range(256))
+
+        def enc(page):
+            return bytes(page[i] ^ K[i] for i in range(256))
+
+        drv_code = (b'\x21\x00\xcf\x11\x00\x40\x01\x00\x01\xed\xb0'       # after group 1: LDIR $CF00->$4000 $100
+                    + b'\x3e\x65\x32\x00\x5b\xcd' + le16(s2)             # gid $65 -> CALL stage 2: group 2
+                    + b'\x21\x00\xd0\x11\x00\x80\x01\x00\x01\xed\xb0'    # after group 2: LDIR $D000->$8000 $100
+                    + b'\x21\xff\xd0\x11\xff\xd1\x01\x00\x01\xed\xb8'    # LDDR: $D000-$D0FF -> $D100-$D1FF
+                    + b'\x21\x00\x40\x11\x01\x40\x01\xff\x00\xed\xb0'    # a fill: LDIR $4000->$4001 $FF
+                    + b'\x31\x00\x60\xc3\x34\x12')                        # LD SP,$6000 / JP $1234
+        drv = bytearray(256)
+        drv[0:8] = bytes([0xDD, 0xE5, 0xCD, 0x6E, pg, 0xCD, 0x2A, pg + 1])   # PUSH IX / CALL stub-read / CALL stub-checksum
+        drv[0x40:0x40 + len(drv_code)] = drv_code
+        drv_tape = bytes(drv[:0x40]) + bytes(drv[0x40 + i] ^ K[i] for i in range(0xC0))
+        params = bytearray(drv)                 # the last block mirrors the driver page, parameters patched in:
+        params[0xE6:0xE8] = le16(0xC900)        # buffer image gid at 0, data at 1.. -> (buf+$E7) = data[$E6]
+        params[0xE8:0xEA] = le16(0xCF00)
+        params[0xEB] = 0xD1
+        # the stage-2 page is the one carrying the copy loop; put it in the region at s2 when s2 is
+        # inside it, else at $CF00 (the tool only needs "in the region")
+        s2_in_region = 0xCF00 <= s2 < 0xD100
+        region_pages = {0xCF00: stage2 if not s2_in_region or s2 == 0xCF00 else payload,
+                        0xD000: payload if not s2_in_region or s2 == 0xCF00 else stage2}
+        tzxbytes = (b'ZXTape!\x1a' + bytes([1, 20])
+                    + std_block(header(3, 'stub', 512, stub_addr, 32768)) + std_block(rom_block(0xFF, stub))
+                    + bl(0x64, 0, 0xC900, keypage) + bl(0x64, 1, 0xCF00, enc(region_pages[0xCF00]))
+                    + bl(0x64, 2, 0xD000, enc(region_pages[0xD000])) + bl(0x64, 3, 0x5B00, drv_tape)
+                    + bl(0x64, 4, buf + 0x109, params)
+                    + bl(0x65, 0, 0x9000, bytes(x ^ 0x21 for x in payload))
+                    + turbo(rom_block(0xFF, bytes(100))))                  # truncated: skipped, not a crash
+        tag = f'[stub ${stub_addr:04X} buf ${buf:04X}] '
+        with tempfile.TemporaryDirectory() as d:
+            tp = os.path.join(d, 'bl2.tzx')
+            open(tp, 'wb').write(tzxbytes)
+            notes = []
+            blocks, got_stub = B.read_tape(tp, 256, notes)
+            eq(len(blocks), 6, tag + 'blocks (the short one skipped)')
+            eq(len(notes), 1, tag + 'the short block is noted')
+            eq((bytes(got_stub), got_stub.addr), (bytes(stub), stub_addr), tag + 'the stub and its load address')
+            eq(B.stub_params(got_stub), dict(first_group=0x64, buf=buf), tag + "first group and buffer from the stub's CP")
+            model, why = B.driver_model(blocks, got_stub, 0x64, buf)
+            eq(why, None, tag + 'driver model')
+            eq((model['keypage'], model['region'], model['driver']['dest'], model['stub_page']),
+               (0xC900, (0xCF00, 0xD100), 0x5B00, pg), tag + 'driver parameters from the buffer image')
+            eq(model['key'], K, tag + 'K = key page XOR the two stub pages')
+            img, loaded = bytearray(0x10000), bytearray(0x10000)
+            for b in blocks[:5]:
+                B.place(img, loaded, b['dest'], b['data'])
+            B.apply_driver(img, model)
+            eq(bytes(img[0xC900:0xCA00]), K, tag + 'key page decrypted in place')
+            eq(bytes(img[0x5B40:0x5B40 + len(drv_code)]), drv_code, tag + 'driver page decrypted from $40')
+            key, at = B.stage2_xor_key(img, model['region'], buf)
+            eq((key, at & 0xFF00), (0x21, s2 if s2_in_region else 0xCF00), tag + 'later-group key and stage-2 page read from stage 2')
+            drv = B.read_driver(img, model, s2)
+            eq([(c['op'], c['src'], c['dst'], c['len'], c['after_group'], c['fill']) for c in drv['copies']],
+               [('LDIR', 0xCF00, 0x4000, 0x100, 1, False), ('LDIR', 0xD000, 0x8000, 0x100, 2, False),
+                ('LDDR', 0xD000, 0xD100, 0x100, 2, False), ('LDIR', 0x4000, 0x4001, 0xFF, 2, True)],
+               tag + 'driver copies from the z80dis walk')
+            eq(drv['handover'], (0x5B40 + len(drv_code) - 3, 0x1234), tag + 'hand-over JP')
+            eq(drv['sps'], [(0x5B40 + len(drv_code) - 6, 0x6000)], tag + 'LD SP')
+            B.apply_copies(img, loaded, drv['copies'], 1)
+            eq(bytes(img[0x4000:0x4100]), bytes(region_pages[0xCF00]), tag + 'copy after group 1 applied')
+            B.place(img, loaded, 0x9000, B.unscramble(blocks[5], 0x64, True, 0x21))
+            eq(bytes(img[0x9000:0x9100]), payload, tag + 'later group de-XORed with the constant')
+            B.apply_copies(img, loaded, drv['copies'], 2)
+            eq(bytes(img[0x8000:0x8100]), bytes(region_pages[0xD000]), tag + 'LDIR after group 2 applied')
+            eq(bytes(img[0xD100:0xD200]), bytes(region_pages[0xD000]), tag + 'LDDR after group 2 applied')
+            eq(img[0x4001], region_pages[0xCF00][1], tag + 'the fill was skipped')
+
+    variant(0xCD00, 0xFE00, 0xCF00)      # the common shape (stage 2 modelled at $CF00 for the tiny region)
+    variant(0xDA00, 0x6D00, 0xD000)      # Empire's shape: stub at $DA00, buffer $6D00, stage 2 in the second page
+
+
+def t_stackscan():
+    """The slot-based shadow stack on a program whose every stack event is
+    known: two balanced CALLs, a POP that discards a frame, a RET into a
+    pushed address (fake return), a reset LD SP that buries a frame under new
+    frames, and a blitter-style LD SP switch-and-restore that must NOT count
+    as a discard; then the ROM ISR as frames (HALT loop, IM 1)."""
+    H, h = fresh()
+    S = mod('stackscan')
+    h.poke(0x8000, 0xCD, 0x20, 0x80,        # 8000 CALL 8020            frame A -> balanced
+           0xCD, 0x30, 0x80,                # 8003 CALL 8030            frame B -> balanced via 8037
+           0x21, 0x40, 0x80, 0xE5, 0xC9)    # 8006 LD HL,8040 / PUSH HL / RET   fake return at 800A
+    h.poke(0x8020, 0xC9)                    # 8020 RET
+    h.poke(0x8030, 0xCD, 0x36, 0x80,        # 8030 CALL 8036            frame C
+           0x18, 0xFE, 0x00,                # 8033 JR $   (never reached); 8035 NOP
+           0xE1,                            # 8036 POP HL               discards frame C
+           0xC9)                            # 8037 RET                  consumes B's slot -> 8006
+    h.poke(0x8040, 0x31, 0x00, 0xFE,        # 8040 LD SP,$FE00          no live frame: cuts nothing
+           0xCD, 0x50, 0x80,                # 8043 CALL 8050            frame D at slot $FDFE
+           0x18, 0xFE)                      # 8046 JR $   (never reached)
+    h.poke(0x8050, 0x31, 0x00, 0xFF,        # 8050 LD SP,$FF00          D cut (pending)
+           0xCD, 0x60, 0x80,                # 8053 CALL 8060            frame E buries D -> D discarded by 8050
+           0xE5, 0xC1,                      # 8056 PUSH HL / POP BC     data, balanced, no frame
+           0xCD, 0x70, 0x80,                # 8058 CALL 8070            frame F
+           0x18, 0xFE)                      # 805B JR $   (never reached: F returns elsewhere)
+    h.poke(0x8060, 0xED, 0x73, 0x00, 0x81,  # 8060 LD ($8100),SP
+           0x31, 0xF0, 0xFF,                # 8064 LD SP,$FFF0          E cut (pending): a data switch
+           0xC1,                            # 8067 POP BC               reads data, not a frame
+           0xED, 0x7B, 0x00, 0x81,          # 8068 LD SP,($8100)        restore: E revives
+           0xC9)                            # 806C RET                  E balanced
+    h.poke(0x8070, 0x21, 0x80, 0x80,        # 8070 LD HL,8080
+           0xE3,                            # 8073 EX (SP),HL           F's slot now holds 8080
+           0xC9)                            # 8074 RET                  consumes F's slot, lands 8080 -> REWRITE
+    h.poke(0x8080, 0x18, 0xFE)              # 8080 JR $
+    h.regs[H.PC] = 0x8000
+    h.regs[H.SP] = 0xFF00
+    s = S.scan(h, 2, None)
+    # (ODD -- SP raised by an instruction outside RET/POP/INC SP/LD SP -- has no Z80 witness: the
+    #  simulator steps an undocumented DD/FD prefix on its own, so a prefixed POP is a plain POP.
+    #  ODD is a model-integrity canary, not something a program can trip.)
+    eq((s['created'], s['balanced'], s['rewritten'], s['odd'], s['open'], sum(s['unresolved'].values())),
+       (6, 3, 1, 0, 0, 0), 'frames / balanced / rewritten / odd / open / unresolved')
+    eq(s['discards'], {(0x8036, 0x8036, 0x8033): 1, (0x8050, 0x8050, 0x8046): 1},
+       'discards: C by the POP at 8036, D by the LD SP reset at 8050')
+    eq(s['fakes'], {0x800A: 1}, 'the RET into a pushed address')
+    eq(s['rewrites'], {0x8074: 1}, 'the EX (SP),HL rewrite')
+    eq(h.regs[H.PC], 0x8080, 'the program reached its final loop')
+    # interrupts are frames: a HALT loop under IM 1 with the ROM ISR
+    H, h = fresh()
+    h.poke(0x8000, 0x76, 0x18, 0xFD)        # HALT / JR $-1
+    h.regs[H.PC] = 0x8000
+    h.regs[H.SP] = 0xFF00
+    h.regs[H.IM] = 1
+    h.regs[H.IFF] = 1
+    s = S.scan(h, 4, None)
+    eq(s['created'] > 8 and s['balanced'] + s['open'] == s['created'] and s['open'] <= 1, True,
+       f'ISR frames balanced (one may be open when the scan ends inside the ISR): {s}')
+    eq((sum(s['discards'].values()), sum(s['fakes'].values()), s['odd']), (0, 0, 0), 'no discards/fakes/odd in the ROM ISR')
+
+
+def t_blitforensics():
+    """The two-background differential on blitters whose sprite is KNOWN because
+    we poked it: masked AND-OR, opaque copy, XOR -- mode, WxH, origin, data,
+    over-$FF and the grid cell for cell.  Then the guards: a fall-through entry
+    (no CALL before the stack top) and a call that never returns are refused,
+    a same-layout back-buffer is measured through --target LO, a sprite clipped
+    into the attributes counts them instead of crashing, an all-transparent
+    sprite is EMPTY (masked-empty and XOR-of-nothing are indistinguishable)."""
+    B = mod('blitforensics')
+    DATA = [0x3C, 0x42, 0x81, 0xA5, 0xA5, 0x81, 0x42, 0x3C]
+    MASK = [0xC3, 0x81, 0x00, 0x18, 0x3C, 0x00, 0x81, 0xC3]        # 1 = transparent
+    MASKED = [0x1A, 0xA6, 0x23, 0xB6, 0x23, 0x12, 0x14, 0x10, 0xF7, 0xC9]   # LD A,(DE)/AND (HL)/INC HL/OR (HL)/INC HL/LD (DE),A/INC D/DJNZ/RET
+    OPAQUE = [0x7E, 0x12, 0x23, 0x14, 0x10, 0xFA, 0xC9]                     # LD A,(HL)/LD (DE),A/INC HL/INC D/DJNZ/RET
+    XOR = [0x1A, 0xAE, 0x12, 0x23, 0x14, 0x10, 0xF9, 0xC9]                  # LD A,(DE)/XOR (HL)/LD (DE),A/INC HL/INC D/DJNZ/RET
+    DOWN = [0x7E, 0x12, 0x23, 0x14, 0x7A, 0xE6, 0x07, 0x20, 0x0A, 0x7B, 0xC6, 0x20, 0x5F,
+            0x38, 0x04, 0x7A, 0xD6, 0x08, 0x57, 0x10, 0xEB, 0xC9]           # opaque, one pixel row down with the ULA carry
+    pairs = [b for m, d in zip(MASK, DATA) for b in (m, d)]
+
+    def run(routine, src, b=8, de=0x4820, call=True, entry=0x8000, bg=None, garbage=0x1234, **kw):
+        H, h = fresh()
+        h.poke(0x8000, *routine)
+        h.poke(0xA000, *src)
+        if bg is not None:                              # something under the sprite
+            for i in range(b):
+                h.poke(de + (i << 8), bg)
+        h.poke(0x9000, *([0xCD, 0x00, 0x80] if call else [0xC3, 0x00, 0x80]), 0x18, 0xFE)   # CALL/JP $8000; JR $
+        if not call:
+            h.poke(0xFF00, garbage & 0xFF, garbage >> 8)  # garbage on the stack top
+        r = h.sim.registers
+        r[H.PC], r[H.SP], r[H.B], r[H.IFF] = 0x9000, 0xFF00, b, 0
+        r[H.H], r[H.L], r[H.D], r[H.E] = 0xA0, 0x00, de >> 8, de & 0xFF
+        eq(h.run_until((entry,), limit=100, interrupts=False)[0], 'target', 'reach the entry')
+        return B.measure(h, entry, **kw)
+
+    def grid(mode, data, mask=None):
+        rows = []
+        for i, d in enumerate(data):
+            m = mask[i] if mask else 0
+            rows.append(''.join('I' if d >> b & 1 else
+                                ('.' if m >> b & 1 else 'K') if mode == 'MASKED' else
+                                'K' if mode == 'OPAQUE' else '.' for b in range(7, -1, -1)))
+        return rows
+
+    rep = run(MASKED, pairs)
+    eq((rep['mode'], rep['w'], rep['h'], rep['origin'], rep['return']), ('MASKED', 8, 8, [0, 72], '$9003'), 'masked: shape')
+    eq(list(rep['data_over_00'].values()), DATA, 'masked: data == over-$00')
+    eq(list(rep['over_FF'].values()), [m | d for m, d in zip(MASK, DATA)], 'masked: over-$FF == mask OR data')
+    eq(rep['grid'], grid('MASKED', DATA, MASK), 'masked: grid, transparent exactly where mask=1 & data=0')
+    eq(run(MASKED, pairs, bg=0x55)['model_mismatch'], 0, 'masked over a real background: model holds')
+    rep = run(OPAQUE, DATA)
+    eq((rep['mode'], rep['transparent_px']), ('OPAQUE', 0), 'opaque: mode, no transparency')
+    eq((list(rep['data_over_00'].values()), list(rep['over_FF'].values())), (DATA, DATA), 'opaque: both backgrounds give the data')
+    eq(rep['grid'], grid('OPAQUE', DATA), 'opaque: grid')
+    rep = run(XOR, DATA)
+    eq(rep['mode'], 'XOR', 'xor: detected')
+    eq((list(rep['data_over_00'].values()), list(rep['over_FF'].values())), (DATA, [d ^ 0xFF for d in DATA]), 'xor: data, ~data')
+    eq(rep['grid'], grid('XOR', DATA), 'xor: grid claims no mask')
+    eq(run(XOR, DATA, bg=0x55)['model_mismatch'], 0, 'xor over a real background: model holds')
+    eq(run(OPAQUE, DATA, bg=0x55)['model_mismatch'], 0, 'opaque over a real background: model holds')
+    INVERT = [0x1A, 0x2F, 0xA6, 0x12, 0x23, 0x14, 0x10, 0xF8, 0xC9]       # LD A,(DE)/CPL/AND (HL)/LD (DE),A ...: data AND NOT bg, outside the family
+    rep = run(INVERT, DATA, bg=0x55)
+    eq((rep['mode'], rep['model_mismatch'] > 0), ('MASKED', True), 'a routine outside the family is reported as a model mismatch')
+    # guards
+    try:
+        run(MASKED, pairs, call=False)
+        raise AssertionError('fall-through entry with a garbage stack top was accepted')
+    except B.BoundError as e:
+        eq('no CALL/RST precedes' in str(e), True, f'fall-through refused: {e}')
+    try:
+        run(MASKED, pairs, call=False, garbage=0x0000)   # a stack top nothing can precede (Gauntlet's JP-entered blitters)
+        raise AssertionError('stack top $0000 was accepted')
+    except B.BoundError as e:
+        eq('no CALL/RST precedes' in str(e), True, f'$0000 stack top refused, not a crash: {e}')
+    try:
+        run(MASKED, pairs, ret=0x9010, steps=2000)
+        raise AssertionError('a call that never reaches its bound was accepted')
+    except B.BoundError as e:
+        eq('did not return' in str(e), True, f'never-returned refused: {e}')
+    rep = run(MASKED, pairs, de=0xD820, lo=0xD000, hi=0xEB00)
+    eq((rep['mode'], rep['origin'], rep['grid']), ('MASKED', [0, 72], grid('MASKED', DATA, MASK)), 'back-buffer at $D000 via lo')
+    eq(run(MASKED, pairs, de=0xD820)['bmp_bytes'], 0, 'back-buffer blit invisible on the display target')
+    rep = run(DOWN, DATA + DATA[::-1], b=16, de=0x50E0)
+    eq((rep['w'], rep['h'], rep['origin'], rep['attr_bytes']), (8, 8, [0, 184], 3), 'clipped at the bottom: 8 rows + 3 attrs')
+    rep = run(DOWN, DATA + DATA[::-1], b=16)
+    eq((rep['w'], rep['h'], rep['row_major']), (8, 16, True), 'two cells tall')
+    eq(run(MASKED, [b for m, d in zip([0xFF] * 8, [0] * 8) for b in (m, d)])['mode'], 'EMPTY', 'all-transparent: EMPTY')
+
+
+CHECKS = [
+    ('tzx: parse synthetic tape', t_tzx_parse),
+    ('tzx: file parse + report', t_tzx_file_and_report),
+    ('tzx: bad checksum flagged', t_tzx_bad_checksum),
+    ('tzx: unhandled block stops', t_tzx_unhandled_stops),
+    ('bleepload: block framing + naive image', t_bleepload),
+    ('bleepload: driver model, stage-2 key, copies', t_bleepload_driver),
+    ('basic: detokenise / USR binary form', t_basic),
+    ('mkloader: PROG/CHANS layout + relocation', t_mkloader),
+    ('mkimage: follow the headers', t_mkimage_auto),
+    ('mkimage: explicit block table, --upto, errors', t_mkimage_explicit),
+    ('screen: display-file arithmetic', t_screen_addr),
+    ('screen: render + attrs', t_screen_render),
+    ('harness: real ROM, ROM writes ignored', t_harness_rom),
+    ('harness: step / run_until / T-states / port write', t_harness_run),
+    ('harness: keyboard, Kempston, unattached ports', t_harness_ports),
+    ('harness: Mem.watch write log', t_harness_watch),
+    ('harness: save/load state, snapshot/diff', t_harness_state),
+    ('harness: call() with sentinels', t_harness_call),
+    ('harness: find_bytes', t_harness_find),
+    ('harness: image from bytes / file', t_harness_image),
+    ('harness: snapshot boot (.z80 -> registers + RAM)', t_harness_snapshot),
+    ('harness: interrupts + fast HALT via the ROM ISR', t_harness_interrupts),
+    ('harness: contended variant constructs and costs', t_harness_contended),
+    ('harness: opt-in $7FFD paging + AY on the 48K (decode, lock, logs, states)', t_harness_paging),
+    ('harness128: the 128K machine (frame, ROMs, paging, AY, speaker, states)', t_harness128_machine),
+    ('harness128: engines py == c, HALT skip == every HALT cycle (IM 2, paging, AY)', t_harness128_engines),
+    ('harness128: hooks, stop_now, on_return, frame hooks', t_harness128_hooks),
+    ('readwatch: memory swap counts reads', t_readwatch_swap),
+    ('walk: boundaries, calls, jumps, inventory', t_walk),
+    ('grepbytes: search + boundary confirmation', t_grepbytes),
+    ('adis: symbols, regions, DEFB, empty config files', t_adis),
+    ('strings / hexdump', t_strings_hexdump),
+    ('speckle: art vs noise', t_speckle),
+    ('contact: both layouts', t_contact),
+    ('keyprobe: export surface + press()', t_keyprobe_exports),
+    ('portconfig: manifest, defaults, need()', t_portconfig),
+    ('stackscan: slot-based frames, discards, fake return, LD SP reset vs switch, ISR', t_stackscan),
+    ('blitforensics: two-background differential on known sprites + guards', t_blitforensics),
+]
+
+
+def main():
+    if '-h' in sys.argv or '--help' in sys.argv:
+        print(__doc__.strip()); sys.exit(0)
+    for name, fn in CHECKS:
+        check(name, fn)
+    passed = sum(1 for _, ok in RESULTS if ok)
+    print(f'\n{passed}/{len(RESULTS)} checks passed')
+    sys.exit(0 if passed == len(RESULTS) else 1)
+
+
+if __name__ == '__main__':
+    main()

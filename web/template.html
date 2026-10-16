@@ -1,0 +1,537 @@
+<title>Bubble Bobble</title>
+<style>
+  /* The page is a frame around a Spectrum screen and nothing else.  Two
+     themes: the default follows the system, and the corner button pins one.
+     The GAME's own colours never change -- the black inside #overscan is the
+     Spectrum's border, painted from the emulated OUT ($FE), not page
+     furniture. */
+  :root{ color-scheme:light dark;
+         --bg:#0f1115; --edge:#2a313c; --btn:#98a2b3; }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#e9ebef; --edge:#c3c9d3; --btn:#59636f; }
+  }
+  :root[data-theme="dark"]{  --bg:#0f1115; --edge:#2a313c; --btn:#98a2b3; }
+  :root[data-theme="light"]{ --bg:#e9ebef; --edge:#c3c9d3; --btn:#59636f; }
+
+  *{ box-sizing:border-box }
+  html,body{ height:100% }
+  body{ margin:0; background:var(--bg); padding:16px;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        transition:background 140ms linear }
+  #overscan{ display:inline-block; padding:24px 32px; background:#000;
+             border:1px solid var(--edge); border-radius:4px; line-height:0;
+             transition:background 40ms linear, border-color 140ms linear }
+  canvas{ image-rendering:pixelated; background:#000; border:0; display:block;
+          max-width:100%; height:auto; width:768px }
+  /* deliberately faint: it is the only thing on the page that is not the game */
+  #theme{ position:fixed; top:10px; right:12px; width:28px; height:28px;
+          border:1px solid var(--edge); border-radius:50%; background:transparent;
+          color:var(--btn); font:14px/1 system-ui,sans-serif; cursor:pointer;
+          opacity:.22; transition:opacity 140ms linear, color 140ms linear;
+          display:flex; align-items:center; justify-content:center; padding:0 }
+  #theme:hover,#theme:focus-visible{ opacity:1 }
+  /* ADDED page furniture (M7.46), like #theme: the machine names its keys only on the
+     control-select screen (front-end group 3), so until then the page says what the
+     KEY TABLE IN RAM is -- read from $B5FD every frame, never typed here */
+  #keys{ margin-top:10px; color:var(--btn); font:12px/1.5 system-ui,sans-serif;
+         opacity:.55; text-align:center; max-width:768px }
+  /* ADDED page furniture (M9.1): Alt+Enter puts the frame -- the Spectrum's border and its screen -- on the whole
+     screen, or over the whole window where the browser has no fullscreen or refuses it; the screen at the largest
+     whole number of device pixels a Spectrum pixel that leaves the page's own border round it (bbFullFit, sized by
+     the script).  Escape, or Alt+Enter again, brings the page back.  The border stays the emulated OUT ($FE). */
+  #overscan.bb-full{ position:fixed; top:0; left:0; right:0; bottom:0; z-index:10; display:flex;
+                     align-items:center; justify-content:center; padding:0; border:0; border-radius:0 }
+  #overscan.bb-full canvas{ max-width:none }
+</style>
+
+<!-- THE OVERSCAN FRAME: a real Spectrum draws a border around the 256x192
+     display and games use it.  The padding is the border's width and its
+     background is the emulated OUT ($FE). -->
+<div id="overscan"><canvas id="scr" width="256" height="192"></canvas></div>
+<div id="keys"></div>
+<button id="theme" type="button" title="theme: system / dark / light"
+        aria-label="switch theme">&#9680;</button>
+
+<script type="application/json" id="assets">__ASSETS__</script>
+<script>
+/* =======================================================================
+   GENERATED FILE -- do not edit.  Edit web/template.html and rebuild with
+       python tools/build.py
+   =======================================================================
+   THE STARTER.  Everything above the demo is the kit; the demo is the
+   smallest thing that exercises every layer of it end to end -- display
+   file, ULA colours and FLASH, border, keyboard matrix, Kempston/gamepad,
+   the beeper edge stream and the sound bridge, the fixed-timestep loop --
+   so a new port begins from a page that already runs and already has a
+   headless test suite (test/kit.test.js) driving it.  Replace `Demo` with
+   the port's engine; keep the shape:
+       step(kb) advances ONE video frame and logs sound against its own
+       frame counter; draw is fillRect-only; sound is flushed from draw
+       with the simulation's frame count.                                 */
+const A = JSON.parse(document.getElementById('assets').textContent);
+
+/*#include platform.js*/
+
+/*#include gfx.js*/
+
+/*#include game.js*/
+
+/* ---- the demo "game" (kept for the kit's platform self-test) --------- */
+const TONE_HZ = 440;
+class Demo {
+  constructor(){
+    this.scr = new SpecScreen();
+    this.frame = 0;            // video frames stepped (the FLASH clock too)
+    this.simFrame = 0;         // the sound bridge's clock, in video frames
+    this.x = 15; this.y = 11;  // the block, in character cells
+    this.border = 0;
+    this.lvl = 0;              // the speaker level the log last set
+    this.tNext = 0;            // the next tone edge, in fractional frames
+    this.firing = false;
+    this.sound = { log: [] };  // rows of [simulatedFrame, level]
+    this.scr.fillAttr(0x0F);   // white ink on blue paper
+    this.paintCell(true);
+  }
+  paintCell(on){
+    let p = SpecScreen.pixelAddr(this.x*8, this.y*8);
+    for (let i = 0; i < 8; i++){ this.scr.put(p, on ? 0xFF : 0); p = SpecScreen.nextRow(p); }
+    /* FLASH while firing: bit 7 of the attribute, swapped by renderScreen
+       every 16 video frames from the frame counter it is handed */
+    this.scr.put(SpecScreen.attrAt(this.x, this.y), (this.firing ? 0x80 : 0) | 0x0F);
+  }
+  /* one video frame.  QAOP or the cursor keys (5678, i.e. the arrows) or a
+     Kempston joystick move; SPACE or fire beeps and reddens the border. */
+  step(kb){
+    const f0 = this.simFrame, k = kb.kempston;
+    let dx = 0, dy = 0;
+    if (kb.down('O') || kb.down('5') || (k & KEMPSTON_LEFT))  dx = -1;
+    if (kb.down('P') || kb.down('8') || (k & KEMPSTON_RIGHT)) dx = 1;
+    if (kb.down('Q') || kb.down('7') || (k & KEMPSTON_UP))    dy = -1;
+    if (kb.down('A') || kb.down('6') || (k & KEMPSTON_DOWN))  dy = 1;
+    const fire = kb.down('SPACE') || !!(k & KEMPSTON_FIRE);
+    if ((dx || dy) && (this.frame % 4) === 0){
+      this.paintCell(false);
+      this.x = (this.x + dx + 32) % 32; this.y = (this.y + dy + 24) % 24;
+    }
+    /* the tone is an EDGE STREAM on the simulated clock: a running phase,
+       so consecutive frames join without a phase jump */
+    if (fire){
+      const half = FRAME_HZ / (2 * TONE_HZ);         // half a period, in frames
+      if (!this.firing) this.tNext = Math.max(this.tNext, f0);
+      while (this.tNext < f0 + 1){
+        this.lvl ^= 1; this.sound.log.push([this.tNext, this.lvl]);
+        this.tNext += half;
+      }
+    } else if (this.lvl){
+      this.lvl = 0; this.sound.log.push([f0, 0]);    // leave the speaker LOW
+    }
+    this.firing = fire;
+    this.border = fire ? 2 : 0;
+    this.paintCell(true);
+    this.frame++; this.simFrame++;
+  }
+}
+
+/* ---- driver ---------------------------------------------------------- */
+const cvs = document.getElementById('scr'), ctx = cvs.getContext('2d');
+/* ADDED, default OFF: a gamepad drives the Kempston port.  THE FAITHFUL PAGE HAS NO KEMPSTON
+   INTERFACE: a player who takes KEMPSTON reads nothing and cannot move (the owner, 2026-09-28:
+   controllers are a later, declared layer).  The engine's inKemp() reads kb.kempston, so the
+   loop's poll() clears it here unless this is set.
+   M10.3: m128 -- the machine the page boots when none is remembered: ON, the 128K (the owner, 2026-10-13: the AY
+   music, with the 128K version's own flow -- M10-PLAN option A); OFF, the 48K page as it was.  saveMachine (ADDED,
+   default ON, as saveHiScore): Alt+M's choice remembered in the browser (bbMachine). */
+const BB_PAGE = { padKempston: false, saveHiScore: true, altKeys: true, m128: true, saveMachine: true };
+/* M9.1 -- THE SAVED HIGH SCORE, ADDED (BB_PAGE.saveHiScore, default ON -- the owner, 2026-09-08; OFF is the machine:
+   its 20,000 every boot).  Read ONCE, at boot: the store's value, if it is eight decimal digits, goes to the engine
+   (game.hiSeed), which lays it over the cold start's at the hand-over ($9692; BB_Game.hiRestore); any other value is
+   REFUSED and said so (info().refused).  Then every frame with no control select up (the game's own world) it reads
+   $FFE1..$FFE4: the first such frame is the BASELINE -- what the cold start left -- and a later change (only $80FA's
+   copy makes one) is saved when it beats what the store holds, re-read each time, so a better score another tab saved
+   stands.  OFF, it neither reads nor writes the store.  A store that throws (file:// with site data blocked) reads as
+   empty and fails its saves -- counted in info(), never raised: the game plays on with the machine's default. */
+function bbHiScore(game, store, on){
+  const st = { on: !!on, key: BB_HI.KEY, loaded: null, refused: null, ticks: 0, base: null, seen: null,
+               saves: 0, saveFails: 0, last: null };
+  const best = () => { const v = store.load(); return v && bbHiValid(v.high) ? v.high : null; };
+  if (st.on){
+    const v = store.load();
+    if (v !== null){
+      if (v && bbHiValid(v.high)){ st.loaded = v.high; game.hiSeed = v.high; }
+      else st.refused = 'not eight decimal digits: ' + JSON.stringify(v).slice(0, 48);
+    }
+  }
+  return {
+    tick(){
+      if (!st.on || game.ctrl) return;
+      st.ticks++;
+      const h = bbHiDigits(game.ram);
+      if (st.seen === null){ st.seen = st.base = h; return; }
+      if (h === st.seen) return;
+      st.seen = h;
+      if (!bbHiValid(h)) return;
+      const b = best();
+      if (b !== null && h <= b) return;
+      if (store.save({ high: h })){ st.saves++; st.last = h; } else st.saveFails++;
+    },
+    info(){ return Object.assign({}, st); },
+  };
+}
+/* ---- M10.3: THE MACHINE -- the 128K or the 48K (the owner, 2026-10-13) ------------------------------------------
+   The machine is chosen once per boot, as the real ones were: the probe answers it at the control select and the cold
+   start runs once.  So switching REBOOTS: Alt+M takes the other machine and bbBoot() loads the game into it from the
+   tape's hand-over ($F5BC's control select), a new BB_Game -- the page's own boot, the same code the page ran at load.
+   The choice is the page's (BB_PAGE.m128 when none is remembered); with BB_PAGE.saveMachine (ADDED, default ON, as
+   the high score's) it is remembered in the browser under BB_MACHINE.KEY -- saved at each switch, read at the next
+   boot -- and a stored value that is not { machine: '128K' } or { machine: '48K' } is REFUSED and said so
+   (info().refused), the default booted.  OFF: the store is neither read nor written; Alt+M still switches, for the
+   page's life.  A store that throws reads as empty and fails its saves -- counted in info(), never raised. */
+const BB_MACHINE = { KEY: 'bb-machine', NAME: { true: '128K', false: '48K' } };
+function bbMachine(store, save, def){
+  const st = { save: !!save, key: BB_MACHINE.KEY, m128: !!def, loaded: null, refused: null,
+               switches: 0, saves: 0, saveFails: 0 };
+  if (st.save){
+    const v = store.load();
+    if (v !== null){
+      if (v && (v.machine === '128K' || v.machine === '48K')){ st.loaded = v.machine; st.m128 = v.machine === '128K'; }
+      else st.refused = 'not { machine: 128K or 48K }: ' + JSON.stringify(v).slice(0, 48);
+    }
+  }
+  return {
+    get m128(){ return st.m128; },
+    toggle(){
+      st.m128 = !st.m128; st.switches++;
+      if (st.save){ if (store.save({ machine: BB_MACHINE.NAME[st.m128] })) st.saves++; else st.saveFails++; }
+      return st.m128;
+    },
+    info(){ return Object.assign({}, st); },
+  };
+}
+const machine = bbMachine(settingsStore(BB_MACHINE.KEY), BB_PAGE.saveMachine, BB_PAGE.m128);
+/* created here, STARTED from the first gesture -- a browser will not run an
+   AudioContext before one.  M10.3: the 'mix' -- the beeper and the 128K's AY on ONE stream (platform.js); on the 48K
+   the AY is never written, so never rendered. */
+const sound = new SoundOut({ instrument: 'mix' });
+const keyboard = new Keyboard();
+/* THE PAGE BOOTS THE MACHINE'S WAY (M7.64): the loader hands over at $F5BC, BB_MENU.LOAD_PHASE
+   T into its frame, and the CONTROL SELECT runs -- player 1's pass, player 2's, the redefine
+   screen for a player who takes KEYBOARD, the black screen (skipProbe, ADDED, default ON: the
+   probe answered at once) and the hand-over, whose $970E is the TITLE.  step() runs all of it.
+   A bare `new BB_Game(A)` is the round-1 capture, IN PLAY: the declared test world every gate
+   that drives a game starts from.
+   M10.3: bbBoot() is that boot, on the machine `machine` names (game.m128, set before ctrlBoot as M10.2a asks), with
+   the objects bound to the game -- the saved high score (read from its store at each boot) and the Alt keys' view --
+   made for it; a REBOOT (Alt+M) also resets the sound bridge: the AY to its power-on silence, the stream re-originated
+   (the new game's frames begin at 0 again). */
+let game = null, hiscore = null, altkeys = null, pageBoots = 0;
+function bbBoot(){
+  game = new BB_Game(A);
+  game.m128 = machine.m128;
+  game.ctrlBoot(BB_MENU.LOAD_PHASE);
+  hiscore = bbHiScore(game, settingsStore(BB_HI.KEY), BB_PAGE.saveHiScore);
+  altkeys = bbAltKeys(game, BB_PAGE.altKeys);
+  if (pageBoots++) sound.reset();
+  return game;
+}
+/* ---- M9.1: FULLSCREEN -- ADDED page furniture (the owner, 2026-09-08) ------------------------------------------
+   Alt+Enter toggles it and Escape brings the page layout back.  The key listener is registered BEFORE
+   attachKeyboard's and stops the event there: ENTER is a Spectrum key (buildKeymap), and Alt+Enter must never press
+   it -- every other key passes through untouched.  The frame (#overscan: the border and the screen) goes on the
+   whole screen -- or, where the browser has no fullscreen or refuses it, over the whole window: the class bb-full
+   either way -- with the screen at the largest whole number of DEVICE pixels a Spectrum pixel (bbFullFit) that
+   leaves the page's own border round it: 8 rows top and bottom, 32/3 columns at the sides (#overscan's 24px / 32px
+   padding at the page's 3x).  The page's draw() calls sync() every frame, so a fullscreen the browser ended itself
+   (its own Escape) restores the page there and a resize refits.  Every outcome is counted in info(), none silent. */
+const BB_FULL = { W: 256, H: 192, BX: 32 / 3, BY: 8 };
+function bbFullFit(w, h, dpr){
+  dpr = dpr > 0 ? dpr : 1;
+  return Math.max(1, Math.floor(Math.min(w * dpr / (BB_FULL.W + 2 * BB_FULL.BX),
+                                         h * dpr / (BB_FULL.H + 2 * BB_FULL.BY))));
+}
+function bbFullscreen(el, canvas){
+  const st = { on: false, mode: null, pending: false, enters: 0, exits: 0, refused: 0, scale: 0, fitAt: '' };
+  const doc = () => typeof document !== 'undefined' ? document : null;
+  const fsEl = () => { const d = doc(); return d ? d.fullscreenElement || d.webkitFullscreenElement || null : null; };
+  function fit(){
+    const w = globalThis.innerWidth, h = globalThis.innerHeight, dpr = globalThis.devicePixelRatio;
+    const at = w + 'x' + h + '@' + dpr;
+    if (at === st.fitAt) return;
+    st.fitAt = at;
+    st.scale = bbFullFit(w, h, dpr);
+    const d = dpr > 0 ? dpr : 1;
+    canvas.style.width = BB_FULL.W * st.scale / d + 'px';
+    canvas.style.height = BB_FULL.H * st.scale / d + 'px';
+  }
+  function show(mode){ st.on = true; st.mode = mode; st.enters++; el.classList.add('bb-full'); st.fitAt = ''; fit(); }
+  function hide(){
+    st.on = false; st.mode = null; st.pending = false; st.exits++;
+    el.classList.remove('bb-full'); canvas.style.width = ''; canvas.style.height = '';
+  }
+  /* the browser said no (a throw, or a rejected promise): the frame stays over the window */
+  function refused(){ st.refused++; st.pending = false; if (st.on) st.mode = 'window'; }
+  function enter(){
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req){ show('window'); return; }
+    show('screen'); st.pending = true;
+    let p;
+    try { p = req.call(el); } catch (e){ refused(); return; }
+    if (p && typeof p.then === 'function') p.then(null, refused);
+  }
+  function leave(){
+    const d = doc(), was = st.mode;
+    hide();
+    if (was === 'screen' && d && fsEl() === el){
+      const x = d.exitFullscreen || d.webkitExitFullscreen;
+      if (x){ const q = x.call(d); if (q && typeof q.then === 'function') q.then(null, () => {}); }
+    }
+  }
+  return {
+    key(e){
+      if (e.altKey && (e.code === 'Enter' || e.code === 'NumpadEnter')){
+        if (!e.repeat){ if (st.on) leave(); else enter(); }
+        return true;
+      }
+      if (e.code === 'Escape' && st.on){ leave(); return true; }
+      return false;
+    },
+    sync(){
+      const f = fsEl() === el;
+      if (f && !st.on) show('screen');               // granted after a leave() that came first: laid out for it
+      if (st.mode === 'screen'){
+        if (f) st.pending = false;
+        else if (!st.pending){ hide(); return; }      // the browser ended it (its own Escape)
+      }
+      if (st.on) fit();
+    },
+    info(){ return Object.assign({ api: !!(el.requestFullscreen || el.webkitRequestFullscreen) }, st); },
+  };
+}
+const fullscreen = bbFullscreen(document.getElementById('overscan'), cvs);
+/* ---- M9.2: THE PAGE'S ALT KEYS -- ADDED (BB_PAGE.altKeys, default ON -- the owner, 2026-10-13: the page's key
+   combos are Alt+, as Alt+Enter is) -------------------------------------------------------------------------------
+   THE GAME'S OWN KEYS -- the faithful path, OFF: SYMBOL SHIFT arms the pause ($8FE9 reads half-row $7F bit 1), CAPS
+   SHIFT ends it (the spin at $8FFB reads half-row $FE bit 0), and CAPS SHIFT with SPACE ends the game: BREAK, the main
+   loop's second exit ($8D63 / $8D6F, SPEC "THE LOOP HAS TWO EXITS").  The kit's keymap makes them PC Ctrl, Shift and
+   Shift+Space.  ON, in the game's world (no control select up -- its menus keep the faithful mapping, SYMBOL SHIFT's
+   codes among them):
+     - the PC's own Shift and Ctrl do not reach the game: CAPS SHIFT and SYMBOL SHIFT read UP, so nothing pauses,
+       resumes or BREAKs by accident (Shift with Space was a game over);
+     - Alt+P TOGGLES the pause: playing, SYMBOL SHIFT is held down until the game has paused itself (its own $8FE7 took
+       it); paused, CAPS SHIFT -- and SPACE held UP, so the pass it resumes cannot read BREAK -- until it has resumed;
+     - Alt+Q QUITS: CAPS SHIFT and SPACE are held down until the game has left play through its own BREAK;
+     - both only in play (paused counts): at the title or on the game-over screen a press is counted and does nothing;
+       a hold the game has not taken in BB_ALT.HOLD frames is let go -- every outcome counted in info(), none silent.
+   The game reads the keys through kb(): a view of the page's Keyboard (its port() and both Kempston bytes) with the
+   above applied; the Keyboard itself is untouched.  Alt+P and Alt+Q never press P or Q (both can be game keys): the
+   listener below runs before attachKeyboard's and stops them, a held combo's repeat too.  OFF: kb() is the Keyboard
+   and the letters pass -- the machine's keys exactly as before. */
+const BB_ALT = { HOLD: 300 };       /* frames a held key waits for the game: past round 1's 221-frame wait on M10 */
+function bbAltKeys(game, on){
+  const st = { on: !!on, hold: null, n: 0, pauses: 0, resumes: 0, quits: 0, ignored: 0, taken: 0, expired: 0 };
+  const inPlay = () => !game.ctrl && !game.front && !game.overScreen;
+  let src = null;
+  function row(r){
+    let v = src.halfrow(r);
+    if (r === 0) v |= 0x01;                          // CAPS SHIFT up: the PC's Shift is not the game's
+    if (r === 7) v |= 0x02;                          // SYMBOL SHIFT up: nor its Ctrl
+    const h = st.hold;
+    if (h === 'pause' && r === 7) v &= ~0x02;        // SYMBOL SHIFT down: $8FE7 arms
+    else if (h === 'resume'){ if (r === 0) v &= ~0x01; else if (r === 7) v |= 0x01; }   // CAPS down, SPACE up
+    else if (h === 'quit' && (r === 0 || r === 7)) v &= ~0x01;                           // CAPS and SPACE down
+    return v;
+  }
+  const view = {
+    port(hi){ let v = 0xFF; for (let r = 0; r < 8; r++) if (!((hi >> r) & 1)) v &= row(r); return v; },
+    get kempston(){ return src.kempston; },
+    get kempston2(){ return src.kempston2; },
+  };
+  function hold(what){ st.hold = what; st.n = 0; }
+  return {
+    key(e){
+      if (!st.on || !e.altKey || (e.code !== 'KeyP' && e.code !== 'KeyQ')) return false;
+      if (e.repeat) return true;
+      if (!inPlay()){ st.ignored++; return true; }
+      if (e.code === 'KeyQ'){ st.quits++; hold('quit'); }
+      else if (game.paused){ st.resumes++; hold('resume'); }
+      else { st.pauses++; hold('pause'); }
+      return true;
+    },
+    kb(keyboard){
+      if (!st.on || game.ctrl) return keyboard;
+      src = keyboard;
+      return view;
+    },
+    tick(){
+      const h = st.hold;
+      if (!h) return;
+      st.n++;
+      if (h === 'pause' ? game.paused : h === 'resume' ? !game.paused : game.overScreen){ st.taken++; st.hold = null; }
+      else if (st.n >= BB_ALT.HOLD){ st.expired++; st.hold = null; }
+    },
+    info(){ return Object.assign({}, st); },
+  };
+}
+bbBoot();                           /* the page's boot: the machine `machine` names */
+/* M10.3: Alt+M REBOOTS INTO THE OTHER MACHINE -- in any state (the control select, the title, play, paused, the game
+   over): the game in progress is gone, as it is when a real machine is switched off.  Like Alt+Enter it is the page's,
+   never the game's: M (a Spectrum key) is not pressed, the event stops here; a held combo's repeat does nothing. */
+function bbMachineKey(e){
+  if (!e.altKey || e.code !== 'KeyM') return false;
+  if (!e.repeat){ machine.toggle(); bbBoot(); }
+  return true;
+}
+addEventListener('keydown', e => { if (fullscreen.key(e) || bbMachineKey(e) || altkeys.key(e)){ e.preventDefault(); e.stopImmediatePropagation(); } });
+attachKeyboard(keyboard, { onGesture(){ sound.start(); } });
+/* THE KEY CAPTION -- ADDED page furniture (M7.46), not the game.  The in-play reader
+   ($ABF4, playerRead) walks each player's four [half-row, mask] pairs at $B5FD/$B605;
+   this decodes the SAME bytes into the page's key names, so the caption can never
+   disagree with the table the game is actually reading.  A $1F first byte is the
+   Kempston marker (a joystick); a ($00,$00) pair is permanently pressed on the
+   machine and is said so.  A connected gamepad that no table reads is SAID, not
+   ignored silently (house rule 6). */
+const BB_PAGE_KEYNAME = { SPACE: 'Space', ENTER: 'Enter', CAPS: 'Shift', SYM: 'Ctrl' };
+function bbKeyOf(sel, mask){
+  if (mask === 0) return 'always held';
+  const out = [];
+  for (let r = 0; r < 8; r++){
+    if ((sel >> r) & 1) continue;                   /* this half-row is selected */
+    for (let b = 0; b < 5; b++) if ((mask >> b) & 1){
+      const k = KB_HALFROWS[r][b];
+      out.push(BB_PAGE_KEYNAME[k] || k);
+    }
+  }
+  return out.length ? out.join('/') : 'none';
+}
+function bbKeyCaption(ram, padCount){
+  const acts = ['left', 'right', 'jump', 'blow'], parts = [];
+  let stick = false;
+  for (const [nm, at] of [['P1', 0xB5FD], ['P2', 0xB605]]){
+    if (ram[at] === 0x1F){ parts.push(nm + ': joystick'); stick = true; continue; }
+    parts.push(nm + ': ' + acts.map((a, i) => a + ' ' + bbKeyOf(ram[at + 2 * i], ram[at + 2 * i + 1])).join(', '));
+  }
+  parts.push(BB_PAGE.altKeys ? 'pause Alt+P (again resumes), quit Alt+Q'               /* M9.2: the page's own, ADDED */
+                             : 'pause Ctrl, resume Shift, quit Shift+Space');
+  if (padCount && !stick) parts.push('gamepad connected -- not read by this key table');
+  else if (padCount && !BB_PAGE.padKempston) parts.push('gamepad connected -- not read: no Kempston interface (padKempston off)');
+  parts.push(bbMachineCaption());                                       /* M10.3: the machine, ADDED */
+  parts.push('fullscreen Alt+Enter (Esc leaves)');                      /* M9.1: the page's own key, ADDED */
+  return parts.join('  ·  ');
+}
+/* M10.3: the caption names the machine the page is RUNNING (the game's m128, not the choice), and the key that
+   reboots into the other */
+function bbMachineCaption(){
+  return BB_MACHINE.NAME[!!game.m128] + ' machine (Alt+M: the ' + BB_MACHINE.NAME[!game.m128] + ')';
+}
+/* while the load's control select is up the table at $B5FD is not the game's yet (the cold start
+   copies it at the hand-over), so the caption says what the screen asks for instead */
+const BB_PAGE_CTRL_CAPTION = 'control select: answer the screen with the keys it names (1-4, then any key ' +
+                             'to redefine, Y or N to confirm)';
+function bbCtrlCaption(){
+  return BB_PAGE_CTRL_CAPTION + '  ·  ' + bbMachineCaption() + '  ·  fullscreen Alt+Enter (Esc leaves)';
+}
+const keysEl = document.getElementById('keys');
+let lastPads = { count: 0 }, lastCaption = null;
+function updateKeyCaption(){
+  const c = game.ctrl ? bbCtrlCaption() : bbKeyCaption(game.ram, lastPads.count);
+  if (c !== lastCaption){ keysEl.textContent = c; lastCaption = c; }
+}
+updateKeyCaption();
+const loop = makeLoop({
+  hz: FRAME_HZ,
+  poll(){
+    lastPads = pollGamepads(keyboard);
+    if (!BB_PAGE.padKempston){ keyboard.kempston = 0; keyboard.kempston2 = 0; }
+  },
+  step(){ game.step(altkeys.kb(keyboard)); altkeys.tick(); hiscore.tick(); },
+  draw(){
+    fullscreen.sync();
+    /* the bridge is handed the engine's log and the SIMULATED frame it has
+       reached -- never wall time; M10.3: and the AY's log, the 'mix's second
+       chip (empty on the 48K) */
+    sound.flush(game.sound.log, game.simFrame, game.ay.log);
+    paintBorder(game.border);
+    renderScreen(ctx, game.scr, game.frame);
+    updateKeyCaption();
+  },
+});
+installThemeButton('theme', 'spec-port-theme');
+loop.start();
+
+/* the test hook: test/kit.test.js and test/bb.test.js load the BUILT file
+   and drive this */
+globalThis.__PORT__ = { BB_Game, Demo, sound, keyboard, loop, assets: A,
+                        /* M10.3: the page's game and the objects bound to it are REPLACED by a reboot (Alt+M), so
+                           these read the page's current ones */
+                        get game(){ return game; }, get hiscore(){ return hiscore; }, get altkeys(){ return altkeys; },
+                        /* M10.3: the machine -- its maker, the page's, the boot and the key, the caption */
+                        BB_MACHINE, bbMachine, machine, bbBoot, bbMachineKey, bbMachineCaption, bbCtrlCaption,
+                        /* M7.54: $9037's block -- the step anchors and the instruction sums the
+                           port stamps every write of the block with, so the gates that hold them
+                           read the engine's numbers rather than copies */
+                        BB_HURRY_T, BB_HURRY_PULSE, BB_HURRY_AT, BB_HURRY_W,
+                        /* M7.56: the round banner's -- the exact offsets and the fitted anchors */
+                        BB_BANNER_W, BB_BANNER_AT, BB_BANNER_N,
+                        /* M7.57: $94C2's -- the exact sums, the item entry's, the hooks' order,
+                           the first wait's count and the contended stretch */
+                        BB_EXT_W, BB_EXT_I, BB_EXT_SCRIPT, BB_EXT_A1, BB_EXT_K, BB_EXT_CP, bbUlaDelay,
+                        /* M7.86: the $9032 reveal's script on the same mirror */
+                        BB_RV_SCRIPT,
+                        /* M7.94: the storm wrap's and the giant hit's, and the giant's award window */
+                        BB_RW_SCRIPT, BB_GR_SCRIPT, BB_GIANT_W, BB_EXT_BLOCKS,
+                        /* M7.95: the treasure room's PERFECT block -- its sums, its script, the award's write offsets */
+                        BB_PF, BB_PF_SCRIPT, BB_AW_W,
+                        /* M7.98: the umbrella's $A110 block -- its sums */
+                        BB_UMB,
+                        /* M7.96: the fourteen small callees' Zilog sums, their roots and the keys left unmeasured */
+                        BB_SM, BB_SM_ROOTS, BB_SM_UNMEASURED,
+                        /* M7.115j: the boss tick's places on the pass's program (its blit keys, stores and reads) */
+                        BB_BT,
+                        /* M7.115k: the sparkle walk's sums and its sites' places */
+                        BB_SC,
+                        /* M7.115l: Boris's erase -- his record and the DI's place (its site, its window) */
+                        BB_BORIS,
+                        /* M7.115m: the even ISR's last accesses on the slot clock */
+                        BB_ISR_PO,
+                        /* M7.58: the storm tick's -- the timing, the painter's exact offsets and
+                           the contended stretch */
+                        BB_STORM, BB_STORM_W, BB_STORM_K, BB_STORM_P, BB_FLOOD,
+                        /* M7.59: the round build's -- the anchors, the exact sums, the stretch and
+                           the scroll's own offsets */
+                        BB_BUILD_AT, BB_BUILD_W, BB_BUILD_K, BB_BUILD_OFF,
+                        bbPixelAddr, bbBlit16, bbBubbleAddr, bbRowBase, bbColAddr,
+                        bbBlitBubble, bbEraseSprite, bbEraseEntity,
+                        bbBuildElementBubble, BB_CHAIN,
+                        /* the SUBSTITUTE FONTS, so the gates that hold them can
+                           compare the engine's own cells instead of falling back
+                           to grepping the built source for a literal */
+                        BB_BANNER_FONT, BB_BANNER_FONT_CENSUS,
+                        BB_LETTERS, BB_DIGITS,
+                        BB_BANNER_STR,
+                        /* ...and $802E's DIAGNOSTIC walk bound, so the gate that
+                           holds it reads the engine's number rather than a copy */
+                        BB_BANNER_MAX,
+                        /* the cold start's constants and the two tables whose
+                           shipped values the increment-G gate ties to what the
+                           engine built -- an unexported name would THROW inside a
+                           checkTrue argument and kill the file, not fail a row */
+                        BB_COLD, BB_ROWTAB, BB_KEYTAB,
+                        BB_TITLE_TAB, BB_STAR_MASKS, BB_TITLE,
+                        /* M7.53: the control select's tape data and the charset base */
+                        BB_FE, BB_CHARSET,
+                        /* H-b: the key read's measured constraint and the frame layer's T */
+                        BB_MENU,
+                        /* H-c: the redefine screen's tape bytes and T */
+                        BB_REDEF,
+                        /* H-d: the ROM interrupt's T law, and the spine's laws and constants */
+                        BB_ROMISR, BB_SPINE,
+                        bbKeyCaption, keysEl,
+                        /* M7.64: the page's ADDED flags and its control-select caption */
+                        BB_PAGE, BB_PAGE_CTRL_CAPTION,
+                        /* M9.1: the saved high score and fullscreen, ADDED -- the page's own two and their makers */
+                        BB_HI, bbHiDigits, bbHiValid, bbHiScore, BB_FULL, bbFullFit, bbFullscreen, fullscreen,
+                        /* M9.2: the page's Alt keys, ADDED -- the pause toggle and the quit */
+                        BB_ALT, bbAltKeys,
+                        /* RA1..RA4: the round advance's measured main-line T */
+                        BB_ROUND_BUILD_T, BB_ROUND_TAIL_T, BB_BANNER_T, BB_AA60_DIVERT,
+                        BB_AA60, BB_AA60_RUN, BB_AA60_CORPSE, BB_CO, BB_ISR_ACK, BB_PLAYER_HANDLER, BB_INT_PHASE };
+</script>

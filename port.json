@@ -1,0 +1,1293 @@
+{
+ "name": "bubble_bobble",
+ "template": "web/template.html",
+ "out": "web/bubble_bobble.html",
+ "includes": {
+  "platform.js": "web/platform.js",
+  "gfx.js": "web/gfx.js",
+  "game.js": "web/game.js"
+ },
+ "assets": [
+  {
+   "key": "render",
+   "file": "build/render_round1.json",
+   "required": true,
+   "note": "round-1 clean render data (M7.0); rounds 2-81 to follow"
+  },
+  {
+   "key": "spawn",
+   "file": "build/spawn_fixture.json",
+   "required": true,
+   "note": "M7.6-i the $7491 ROUND SPAWN TABLE (shipping data) plus the spawner oracle: the entity table, $AA57, $73A6 and the behaviour list the machine leaves for every one of rounds 1-79, 513 enemies"
+  },
+  {
+   "key": "walker",
+   "file": "build/walker_fixture.json",
+   "required": false,
+   "note": "M7.6-ii $AA60 entity-update oracle: the enemy table, the $A891 wake-up delays and the pass globals frame by frame over nine scenes (five at M7.6-ii), four of them FRESHLY SPAWNED rounds so the asleep path is reachable; M7.49: the capesc rows ($BE5B/$B679 called directly) seed $A431 to 0 and record it after (a431), a capture row brackets $BE92 CALL $A447 (be92: +7 aligned, +20 shifted, by the CACHED X; nothing on a first visit or at a cached Y of $C0), and 14 capture cases hold the cached +3/+2 apart from the current +5/+6 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "entityspr",
+   "file": "build/entity_sprites.json",
+   "required": true,
+   "note": "the entity sprite banks $C100-$DFFF (7936 bytes, 64-byte MASKED 16x16 sprites): every enemy roster bank plus the six 352-byte pre-shifted player frames $D7C0-$DFFF, which BOTH players draw from (P2 stands on $D920). TAPE DATA -- non-zero in build/image_tape.bin and byte-identical to the live dump except inside $D380, the element bubble the game rebuilds at runtime. $5B80, type 0's facing-1 mirror, is runtime-built and deliberately excluded"
+  },
+  {
+   "key": "giantspr",
+   "file": "build/giant_sprites.json",
+   "required": true,
+   "note": "the GIANT / BOSS sprite banks $C080..$C0FF (the giant peach, $A84D with A = 3) and $FE02..$FE81 (A = 4: the boss), 128 bytes each -- $A8C1 draws four character rows of eight pixel rows of four bytes from the bank $A8C2 points at.  TAPE DATA (build/image_tape.bin), asserted equal in five live saved states (tools/extract_giant_sprites.py).  The candy cane's bank, $5B00, is in the relocated block (reloc).  Until 2026-10-08 the port never laid these down and the peach / boss drew zeros"
+  },
+  {
+   "key": "tapebytes",
+   "file": "build/tape_bytes.json",
+   "required": true,
+   "note": "THE TAPE'S BYTES THE GAME READS IN PLAY THAT NOTHING ELSE LAYS DOWN (tools/tapereads.py extract, from its sweep): Boris's masked 16x16 $FF50..$FF8F (the owner's 'Boris doesn't appear after the hurry up', 2026-10-10 -- $9250's pointer, drawn by $A447), the lightning bolt $A37D..$A39C ($A2D5's blit) and the fire's two frames $A39D..$A3AC ($A04E), the giant diamond's award byte $AAE9 ($A9C1 reads $A9EA + (type 0 - 1) & $FF -- the last byte of $AAE6 BIT 2,(IY+7): +56,000), and round 45's paint below the map $FB07..$FB0B / $FB27..$FB2B / $FB47..$FB4B ($40, on the tape, read by the map probes in every round before 45).  Tape data (build/image_tape.bin), asserted equal in every real-load state.  Until 2026-10-10 the port read zeros there: Boris, the bolts and the flames drew blank, the giant diamond awarded nothing"
+  },
+  {
+   "key": "itemspr",
+   "file": "build/item_sprites.json",
+   "required": true,
+   "note": "the item sprite bank $5D00..$603F (832 bytes, 26 unmasked 16x16 sprites at stride 32). RUNTIME-BUILT, not tape data: build/image_tape.bin is all zeros from $5C00 to $6100 because no tape block covers those pages. Built once during the front end and never rebuilt in play; carried as a declared asset until the builder is found (M7.8). See TRAPS #43"
+  },
+  {
+   "key": "popemit",
+   "file": "build/popemit_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B7 the POP-EMIT TAIL and the AWARD FORK: the popped bubble's CLASS travels through an OPCODE ($B6F5 writes (IY+9) into $B742, the operand of $B741 LD A,3, and then zeroes +9), and a provenance diff cannot find it -- the tape holds $03 there and the round-80 dump $00, neither of them a class. The POOL CENSUS over 49 states settles it instead: elwater (element 2) carries class-2 bubbles, elfire (4) carries 4s, ellight (3) carries 3s, refuting a static enumeration that had concluded classes 2 and 4 unreachable and $9460 dead code",
+   "note2": "the award field is SEEDED ZERO because $80FA clears it ($84 55 04 00 = 45584 -> 45684 for class 1, 45594 for 2 and up, 45585 for class 0); ($AA5F) is SEEDED $77 because the states it runs on read $00 (not every capture does: four shipped states were taken mid-pass inside $A447 and read $05..$09, and the Boris rounds read $FE/$FF), and a kill costs MINUS ONE for a live enemy and MINUS TWO for a slot whose bit 5 is clear -- the second decrement lives in $8C51's call to $A447 and the port carried only the first; $B816 has NO ACTIVE CHECK and the enemy array is only SEVEN slots, so k=7 corpses P1's status record and k=8 P2's; and $8BC2 takes TWO RNG draws, counted rather than inferred",
+   "ship": false
+  },
+  {
+   "key": "bolt",
+   "file": "build/bolt_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B6 the ELEMENTAL BOLT, the only thing that damages the boss. THE HIT WINDOW IS NOT A BOX and had never been measured: tileX in {bossX-3, bossX} and tileY in {bossY-3, bossY-2, bossY-1}, so bossX+1, bossX+2 and row bossY all MISS -- swept 11x11 at THREE boss positions because at bossX=2 the bossX-3 column is off-screen and a sweep there alone passes a port implementing offset 0 only (TRAPS #49). The separating input against every AABB model is a bolt at (bossX+1, bossY-2): inside the boss's own sprite, and not a hit",
+   "note2": "and two things no capture shows, both measured as the SAME bolt on round 20 against round 80: the bolt DOES NOT MOVE on the frame it damages the boss ($9F57 replaces the pushed physics with the award tail -- X stays 160 against 152), and the boss hit SUPPRESSES the enemy kill ($9F51's SCF means $9EFE's CALL nc does not fire). Plus $9E50's TWO self-modified gates, without which driving it measures nothing; $9D83, an opcode byte that is also state and reads $87 in BOTH images; and the sub-row pairing -- at Y=$54 the erase spans THREE character rows and the draw still spans two",
+   "ship": false
+  },
+  {
+   "key": "bossoverlap",
+   "file": "build/bossoverlap_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B5 the OVERLAP TEST and the DAMAGE TAIL: $A98F/$A990 are TWO BYTES OF LIVE STATE that are also two instructions inside $A97D's own control flow -- `37 C9` (SCF/RET, EVERY POSITION AN OVERLAP) on the tape, `00 00` in every boss capture, and the decay between them measured over 600 frames from a cold round 1 (55 decrements of $A98F, zero at frame 137; 201 of $A990, frame 429) AND over round 20, where the pair's rate is IDENTICAL while the hold-off histogram beside it scales with ($AA57)",
+   "note2": "the accept set is swept over all 768 tiles at TWO boss positions (TRAPS #49) and is exactly the 4x4 box at both; the causal row shows a player at pixel (200,150) DYING with the pair alive and a boss at (2,3); $927D is tabulated over every (IX+$5A) that reaches it and is NOT idempotent on bit 2; and $AA35/$927D are entered ZERO times in 240 frames of the fight while $A9AF, the SCF exit, is entered 6",
+   "ship": false
+  },
+  {
+   "key": "bossdraw",
+   "file": "build/bossdraw_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B4 the BOSS DRAW and ERASE: the erase RECONSTRUCTS the attributes from the palette pair ($9D4C reads BIT 5 of the COLOUR shadow and writes $8309 or $830A) rather than restoring them, driven with the pair POISONED $5A/$A5 -- and over a CHECKERBOARD colour shadow, because the H13 falsification pass showed the drafted uniform controls cannot fail: boss, bosskilled and both uniform worlds give sixteen IDENTICAL cells and only bosshit discriminates, in TWO of sixteen. The checkerboard makes all sixteen discriminating",
+   "note2": "and three things a DIFF cannot see: seeded $5A the same sixteen writes report ZERO changed bytes (TRAPS #44, firing); on bossspawn rows 0 and 1 both divert through the $FD00 guard's $01FF onto the SAME four cells, so 16 writes show as 12 distinct and the DRAW falls from 128 bitmap bytes to 64; and the draw's attribute walk DESCENDS (LDD) where the erase ASCENDS (INC E/INC L, eight-bit). $A8FD over C=0..6 makes the LDD read the draw routine's own opcodes, and the TAPE RESIDUE $A881 makes it read the spawn routine's source table",
+   "ship": false
+  },
+  {
+   "key": "bosstick",
+   "file": "build/bosstick_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B3 the BOSS TICK: the box read off the MACHINE by watching the boss move (X in [2,26], Y in [3,19], 266 bodies in 900 frames at 0.2956/frame with frame gaps of 3/4/5 -- it is NOT repainted every frame), the shared bounce $AA38 driven over all 256 positions for six velocities per axis (the KEPT set is exactly [lo-v, hi-1-v] mod 256, and for X with v=3 that is [0,23] AND {255}, the eight-bit wrap showing through), the spawn arm build/boss.pkl cannot take because $A839 is the presence flag AND the row, and an 81-round CHAINED BUILD carrying poisoned velocities $03/$FD that survive the build AND the spawn and then step three tiles a tick",
+   "note2": "negatives: $AA47/$AA48 have ONE reference each and no writer at all; $A8DC has ZERO references in 64K and still shifts every draw write by +$100 when BUILT; $A824's body is dead on round 80; and the plan's 'inherited across the advance' list is RIGHT for $AA06/$A82D/$A98F/$A990/$A8DB and WRONG for $9F62, which $79A8 rewrites with its doubled operand ($14 on round 81) -- $A839 is entry 12 of the $9AC1 clear table and $9855 zeroes it",
+   "ship": false
+  },
+  {
+   "key": "bossdeath",
+   "file": "build/bossdeath_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B2 the BOSS HP BYTE and the DEATH TAIL: all 256 values of $9F62 poked through $8E4E (1..128 ALIVE, 0 AND 129..255 DEAD -- the byte is signed after the DEC, so 'zero means dead' is right on one value in 129), the self-doubling seeder $79A2 whose own operand $79A3 is $05 on the tape and $0A on a round-80 state and $14 on 81 (the discriminator $9F62 cannot be, being $2A everywhere), the $9573 busy wait over a seven-row (A,B) grid including (255,255) and (1,1), and the death itself driven once with a WRITE LOG rather than a diff -- because $8E3B, $8609 and $9F62 have to hold the values that reach the branch and so cannot carry a marker",
+   "note2": "23,967,550 T end to end, 208 display WRITES over 138 CHANGED bytes, eleven attribute cells of $C5, and ZERO writes to any of the nine negatives in 564 writes. $8ECF and $D167 are entered zero times",
+   "ship": false
+  },
+  {
+   "key": "gameover",
+   "file": "build/gameover_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B1 the EXIT and the GAME LIFECYCLE: the $8E2A trigger BUILT (48 of 49 saved states have a player in play, so $8E36 is unreachable from every capture) and paired with a control that only reaches $8CDC 1576 frames later by a natural death; SP = $96DD with $8CDC itself below it, so the exit is a RETURN through the stack; the screen counting to the EIGHT-BIT WRAP (76/1/128/255/192 from $B4/$FF/$80/$01/$40) with nine attribute cells of $4E -- the instruction reads 14 and $995A adds the $40; $96DF's reset over a world seeded $5A with the HIGH SCORE at $FFE1..$FFE4 OUTSIDE the twelve-byte clear; $97D2 run twice (CALL then fall-through) over both structs; $9961 the MID-GAME JOIN measured with its $9998 tail jump CUT, because $7FC0 RRD-converts both score records on its way past M7.31 ADDED THREE PHASES: phase_glyphs watches $8052 for the glyph run at CODE AND ROW level -- 'GAME OVER' from $9A95, 72 display writes at $484C, IX left at $9A9F, nine attribute cells of $4E at $594C, columns 12..20 of character row 10 for BOTH runs, zero strays -- which closes the gap B1 declared; phase_handcoded tables the three hand-coded $995A sites (11/10, 9/8, 9/9) and FALSIFIES M7.30's claim that the off-by-one belongs to the hand-coded sites, ONE of three being exact (TRAPS #169); phase_802e_refs makes the $802E census DATA rather than a constant in a check label -- nine references, eight CALL plus one JP ($8EA7), so a `CD 2E 80` scan alone finds eight of nine. NOTE phase_screen's bitmap_changed is 51 and NOT 72: its before-snapshot is taken after the loop has already drawn once, so a redraw of identical pixels is invisible to the diff -- right for a gate asserting > 0 against an engine that drew none, wrong as a target for one that draws (TRAPS #172).",
+   "note2": "and two census errors: $FEC9 has THREE writers where `32 C9 FE` finds two ($8CFC INCs through HL), and $7FC0 is NOT round-1-only -- $9998 is a tail JP to it",
+   "ship": false
+  },
+  {
+   "key": "passclock",
+   "file": "build/passclock_fixture.json",
+   "required": false,
+   "note": "M7.7-H13-B0 the PASS CLOCK and the CHAIN SPINE: build/boss.pkl run on TWO MACHINES (contended 8548 passes/900 frames, uncontended 8674) because a single capture cannot tell a PASS divider from a FRAME divider; the $AA05 divider's interval is exactly 32 TICKS and NOT 32 passes (a tick is a pass on which $A9FC's involution did not latch); the $A9FC orbit BUILT by seeding $AA00 at the call (6 latches, stride 2, against ZERO from either shipped boss state); $FECD poked 0/1/3 -> that many fully built discarded rounds; all twenty chain entries reached from their own CALL on 1198/1198; TWO exits ($8D0D game over AND $8D63 CAPS+SPACE BREAK, both reaching $8CDC, against a control that reaches it in no number of steps); $7FFC's four INC L runs; and the $5CE0 sparkle table measured ZERO on three round states although the relocation fills it",
+   "note2": "$8D0C..$8D70 has no HALT -- but $7E80's subtree reaches $7EC2 EI/HALT and costs a whole frame three times in 900",
+   "ship": false
+  },
+  {
+   "key": "dropin",
+   "file": "build/dropin_fixture.json",
+   "required": false,
+   "note": "M7.7-H12 the ENEMY DROP-IN: the $7336 arming over five rounds, the $B520 ramp driven from a BUILT world with a paired CONTROL at $B54B=0 (ordinary falling is also Y+2 on the odd ISR), the overshoot negative characterised by poking above the target, the freeze proved as P1's X CONSTANT WHILE THE COUNTER IS NON-ZERO, and the reading pass's 'top-of-playfield clip' RETRACTED -- $A42B EXCLUDES a 30-pixel band and $A430 self-modifies its base at $A431, so the band walks down through a pass -- and does NOT persist across frames: $A3D2 re-seeds $B9 before every pass (CORRECTED M7.49)",
+   "ship": false
+  },
+  {
+   "key": "scroll",
+   "file": "build/scroll_fixture.json",
+   "required": false,
+   "note": "M7.7-H11 the SCROLL-IN, gated as an ANIMATION because H2 proved the end state tests nothing: $840A driven in a SYNTHETIC world whose 96 rows are pairwise distinct (5376 bitmap + 672 attribute writes, rows 2..22, ZERO shadow writes, T=138089), $8447 over every k it reaches with its attribute source proved to be the COLOUR shadow, the self-written LDI chain at $9603 shown to ignore BC, ONE $FD44 entry poked away from its $FD04 partner, the two unreachable table entries asserted as negatives, round 1 entering the copier ZERO times, and a 66-frame MID-SCROLL filmstrip bracketed by PC",
+   "ship": false
+  },
+  {
+   "key": "elembank",
+   "file": "build/elembank_fixture.json",
+   "required": false,
+   "note": "M7.7-H10 the $D380 element sprite bank: 1456 writes per build keyed on ($7E0E) and NEVER on the round, the 384-byte clear that exists because $AA49 leaves B=0, the TWO-TRIPLE shift rule (bytes 0,1,2 then 5,4,3 with byte 5 as the MSB -- a naive 48-bit row shift gets 92-98 of 384 wrong), and per-class SUBSTITUTE banks built on the machine from the port's own glyphs so the engine has an exact target everywhere except the eight declared bytes",
+   "ship": false
+  },
+  {
+   "key": "letters",
+   "file": "build/letters.json",
+   "required": false,
+   "note": "M7.7-H9 the SUBSTITUTE EXTEND letters -- a DECLARED DEPARTURE. The original reads Spectrum ROM charset cells through $95D5 (and, per H6, the same six addresses through $C068), and this project ships no ROM; tools/make_letters.py draws six 8x8 glyphs and refuses to emit unless every one differs from the ROM's (36 of 48 bytes do). No ROM byte appears in this file",
+   "ship": false
+  },
+  {
+   "key": "hud",
+   "file": "build/hudfurniture_fixture.json",
+   "required": false,
+   "note": "M7.7-H9 the four post-$8216 painters: per-routine write censuses on BUILT rounds 2/5/80 with interrupts OFF (the ISR contaminated the first run from $B674), the nested $7FDF CALL $806C measured separately and subtracted, $957E driven with $FDE3/$FDED SEEDED because it writes NO PIXELS otherwise, $9904 given its HL argument ($484C/$488C), the RRD loop with all three score records POKED APART, the $08FF guard poked to $07 and MEASURED (263 bytes, $85B1..$86B7), CONTROLLED-world ordered write logs for the engine to match byte for byte, and BOTH reference sites of $7FC0 -- the round-1 CALL z and the PLAYER-JOIN tail call the plan missed",
+   "ship": false
+  },
+  {
+   "key": "roundtile",
+   "file": "build/roundtile_fixture.json",
+   "required": false,
+   "note": "M7.7-H8 the PLATFORM TILE and the WALLS: the 24-byte $856C buffer pinned by 24 DISTINCT seeds through one solid cell (24 ordered writes, 16 on the last map row), the STORE-vs-OR split driven over a background the tile DISAGREES with (the only configuration in which two of the three OR sites are visible at all), $82C5's six buffer writes in two groups, $8390's two expansions, $837A's 88 collision-wall cells, and the WALL ORDER compared BYTE BY BYTE with every carried counter pinned",
+   "ship": false
+  },
+  {
+   "key": "records",
+   "file": "build/round_records.json",
+   "required": false,
+   "note": "M7.7-H7 the 81 ROUND RECORDS (4,299 bytes at $61A8, ONE CONTINUOUS BIT STREAM each -- 22 rows x 14 or 28 bits with NO per-row alignment) and the 11-byte size bitmap at $8543 that selects between them (MSB first: bit 7-(i&7) of byte $8543+(i>>3); SET = 39 bytes, 14 wide + REVERSED mirror; clear = 77 bytes, 28 wide). Tape data, asserted byte-identical in image_tape.bin and image.bin"
+  },
+  {
+   "key": "geom",
+   "file": "build/roundgeom_fixture.json",
+   "required": false,
+   "note": "M7.7-H7 the ROUND-RECORD WALKER $848C: the layout of all 81 records and the 8 bytes of slack, the two SELF-MODIFIED operands $84E5/$8500 gated AS STATE with one build of each class, 616 cells compared VALUE BY VALUE against a Python walk over $F842..$FAFD, the cells outside the record counted separately, and a record byte poked to $00 (not $FF -- round 1 already holds $FF) with the changed set COMPUTED from its bits",
+   "ship": false
+  },
+  {
+   "key": "elemclass",
+   "file": "build/elemclass_fixture.json",
+   "required": false,
+   "note": "M7.7-H6 the ELEMENT CLASS $7E0E: the four $00-separated lists at $7E4B (11/10/13/15 rounds), the walk's PHANTOM self-modifications from INC (HL)/DEC (HL), round 81's STALE class ($7C89 RET z), the group-3 redraw asserted as a FUNCTION over all 256 R values, and the four readers -- including the correction that $9E75 dispatches THREE classes and the finding that classes 5..12 are the EXTEND letters, folded 8->6 by $B80E and drawn from the ROM CHARACTER SET",
+   "ship": false
+  },
+  {
+   "key": "roundadv",
+   "file": "build/roundadv_fixture.json",
+   "required": false,
+   "note": "M7.7-H1 the TRANSITION SPINE: the pixel census split at the first $8216 (round 1 discards NOTHING because it skips the scroll; rounds 2+ discard 163,872 identically), the four painters bracketed by their own stack frames, the $9AC1 walk asserted as NINETEEN POINTERS whose TABLE is never written, and two negatives -- the sparkle table's $5CFC..$5CFF surviving both clears, and $9891 UNDOING $88E0's diamond pin every single round (test-only)",
+   "ship": false
+  },
+  {
+   "key": "occupancy",
+   "file": "build/occupancy_fixture.json",
+   "required": false,
+   "note": "M7.7-H5 THE OCCUPANCY FIELD, bits 0-4 of the colour shadow: the claim $B8C0, the release $B6D6, and the SHARED PROBE $AE81 that $AE7F and $AD35 call with different masks ($3F solid-or-claimed, $20 solid alone).  Its answer is NOT a boolean -- for a claimed cell it returns the POOL OFFSET of the bubble holding it, and with (IY+8) bit 1 set it marks that bubble and ABANDONS ITS CALLER.  A marker of 12 resolves to offset ZERO and hides all of it (test-only)",
+   "ship": false
+  },
+  {
+   "key": "drift",
+   "file": "build/drift_fixture.json",
+   "required": false,
+   "note": "M7.7-H4 the BUBBLE DRIFT FIELD in bits 6/7 of the colour shadow, read by $B846's RLCA x3 / AND 6 into a code indexing $B8DB.  Carries the field for all 81 rounds, the four deltas, the round-45 overflow outside the map, and THE FRAME-COUNT DEMONSTRATION: an 80-frame differential says the bits are unread and a 600-frame one diverges at frame 108 -- while round1_48 says unread even at 600 frames and `water`, the SAME ROUND, diverges at frame 1 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "collmap",
+   "file": "build/collmap_fixture.json",
+   "required": false,
+   "note": "M7.7-H3 THE COLLISION TRANSFORM, where M7.1 binds: the palette $82D6 (SOLID = (p & $7F) | $40, OPEN = SOLID & $47, bit 7 stripped into $860C) and $79AC -> $7C43's (v & $38) ? $20 : $00 over 768 cells.  Seeds are driven on BOTH sides of the $38 test, because a seed of $47 sends every cell down the JR z path and the second writer NEVER FIRES; the FULL 768-byte output is asserted rather than a bitmask, because a port converting 3 cells instead of 768 is invisible to a bit-5 gate on the eleven rounds whose palette already has bit 5 set (test-only)",
+   "ship": false
+  },
+  {
+   "key": "discard",
+   "file": "build/discard_fixture.json",
+   "required": false,
+   "note": "M7.7-H2 THE DISCARD: $7F4E CALL $8216 repaints the whole playfield from the shadow three instructions after the scroll loop exits, so an end-state screen gate CANNOT FAIL.  Proved by a patch pair -- $7F34 from 28 18 to 18 18 so no round ever scrolls -- run on the SAME build twice from one saved machine: the shadow and colour shadow come out BYTE-IDENTICAL on every round, and the one display difference is two settling enemies two pixels apart because the longer build let the ISR tick once more (test-only)",
+   "ship": false
+  },
+  {
+   "key": "provenance",
+   "file": "build/provenance_fixture.json",
+   "required": false,
+   "note": "M7.7-H0 whose bytes $5B00..$61A7 are: the $96AE cold-start LDIR measured on the machine from build/title.pkl with the destination POISONED and SP pinned OUTSIDE the write range, a source poke proving it is a copy and not a coincidence, the tape image's $6180..$61A7 shown to be 36-of-40 NON-ZERO and WRONG (so TRAPS #43's all-zero guard passes), the front end's 226,384 writes there shown to be ROM PUSHES alone, and the two BUILD counters separated from the round by a chained sweep across a milestone warp (test-only)",
+   "ship": false
+  },
+  {
+   "key": "reloc",
+   "file": "build/reloc.json",
+   "required": false,
+   "note": "M7.7-H0 the COLD-START RELOCATION SOURCE $E000..$E6A7, which $96AE LDIRs over $5B00..$61A7 once before the front end.  The port carries the SOURCE and performs the copy, because reading $5B00..$61A7 from the tape image at its own address is wrong by 1,385 of 1,704 bytes -- and TRAPS #43's all-zero guard PASSES on it, since $6180..$61A7 holds 36 of 40 non-zero bytes the front end merely pushed there ($5BB0 LD SP,$61A7)"
+  },
+  {
+   "key": "treasure",
+   "file": "build/treasure_fixture.json",
+   "required": false,
+   "note": "M7.7-I11 the TREASURE ROOM: handler 12's tail $890D arms it, the fill $8950 places items over six rows of seven through the nine-cell colour-shadow probe $899E (whose abort is CONTROL FLOW -- $89B7 POPs $899E's frame and returns past it with carry clear), and the drain $8F36 clears the room on an EQUALITY of the timer's high byte eight above the captured one, awarding $0100/$0050 to the leader through the HIGH half of the pending field.  Rounds reached with F0's chained recipe; the probe offset driven both ways on maps where the two AGREE and maps where they DIFFER (test-only)",
+   "ship": false
+  },
+  {
+   "key": "roundclass",
+   "file": "build/roundclass_fixture.json",
+   "required": false,
+   "note": "M7.7-F0 the round-class census and the CHAINED-BUILD RECIPE the later increments consume: 81 sequential CALL $97F8 in ONE world (poking $8609 is NOT a round sample -- $8609 := 19 warps to 81 and gives round 81's signature), the milestone warp suppressed, SP pinned per build, and $745C := $AABB / $7E0E := $EE reseeded before EVERY build so 'not written' and 'written with the same value' separate on all 81 rows; plus the sixteen-row warp truth table with all four inputs poked apart, and $9811 asserted as a FUNCTION of all 256 R values rather than sampled (test-only)",
+   "ship": false
+  },
+  {
+   "key": "sparkle",
+   "file": "build/sparkle_fixture.json",
+   "required": false,
+   "note": "M7.7-I10 the $5CE0 burst-sparkle engine $C002 and its seed $B6FC: every old phase over a screen seeded never-zero and never equal to its own shadow, a full lifetime captured after EVERY pass (phases 3..7 OR the same sprite into the same cells, so the finished screen cannot count the draws), fourteen distinct particles for the walk order, the LDI's sixteen-bit BC decrement with C = 0 and C = 1 (in play C is ZERO in the fruit and boss states, and slot 13 is then never serviced), the pop's Y-range cancel, the table-full fallback onto slot 13, and the free-slot reuse that only an EXPIRED particle can show (test-only)",
+   "ship": false
+  },
+  {
+   "key": "corpseland",
+   "file": "build/corpseland_fixture.json",
+   "required": false,
+   "note": "M7.7-I9 the corpse fall $8B4E, the floor probe $8BB4 and the landing $8B83: built worlds with bit 5 set in exactly one of six cells and NO pixels painted (plus the converse, pixels with bit 5 clear), the $AED1 above-the-HUD dummy, the three-byte self-modified type generator seeded MID-CYCLE and again after $88E0's diamond pin, and the unguarded slot-scan overrun into $9643/$9644 -- which holds CODE (test-only)",
+   "ship": false
+  },
+  {
+   "key": "corpse",
+   "file": "build/corpse_fixture.json",
+   "required": false,
+   "note": "M7.7-I8 corpse birth $8BC2 and flight $8A78-$8B4D: 16 births over swept LFSR seeds with the third RNG use (bit 0 of the generator's own H after the second draw) predicted independently in Python, and 8 flight runs x 40 frames with the parity ALTERNATED, forcing both Y wraps, both X clamps and the eight-bit left-edge wrap. The fall frames are I9's (test-only)",
+   "ship": false
+  },
+  {
+   "key": "puspawn",
+   "file": "build/puspawn_fixture.json",
+   "required": false,
+   "note": "M7.7-I7 the per-round spawn flow $89CB and both type decisions: 360 power rows, all 256 wide-draw values, the three-call umbrella-lock transition, 160 flow rows across the timer boundaries including $0500 where a >= model would still spawn, and the $9AE9 map. Both LD A,R sites are patched in place to LD A,n -- a DECLARED SUBSTITUTE, same length, restored after -- and the fixture records WHICH site fired (test-only)",
+   "ship": false
+  },
+  {
+   "key": "puhandlers",
+   "file": "build/puhandlers_fixture.json",
+   "required": false,
+   "note": "M7.7-I6 the power-up dispatch $8839 and all 16 handlers: each called directly with the jump table READ OUT OF THE IMAGE, every write in $4000-$FFFF logged (minus the stack), both players' structs seeded BOTH $FF and $00 so that a SET over $FF and a := 0 over $00 are each visible in one of the two, and each handler run with IX = P1 and IX = P2 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "itemlife",
+   "file": "build/itemlife_fixture.json",
+   "required": false,
+   "note": "M7.7-I5 the item lifetime clock, the expiry and the erase: the $8669 edge detector called three times with $8DB6 FROZEN, the $86CC phase step swept over all 8 phases x 3 counter values x the $FED1 skip, and the $86E6/$876C/$A314 erase over a dirtied world with the two colours DIFFERENT and shadow bit 5 set in exactly two of four cells (test-only)",
+   "ship": false
+  },
+  {
+   "key": "scoreaward",
+   "file": "build/scoreaward_fixture.json",
+   "required": false,
+   "note": "M7.7-I4 the score award $80FA, the pending clear $8161 and the HUD renderer $816B: 22 award rows, all 16 $8649 values and 3 clear rows, with the renderer's screen ADDRESSES captured but never its pixels (the glyphs come from the Spectrum ROM charset at $3C00 and this project ships no ROM transcription) (test-only)",
+   "ship": false
+  },
+  {
+   "key": "itembox",
+   "file": "build/itembox_fixture.json",
+   "required": false,
+   "note": "M7.7-I3 the overlap box $930A/$9312 swept EXHAUSTIVELY (all 256x256 item-vs-player coordinates per axis, 131072 rows, carry flag captured) plus 135 direct calls of the collect $87B2 covering the $F8/$F0 mask split, the runtime patch byte, the BIT 6 lock and the 8-bit wrap (test-only)",
+   "ship": false
+  },
+  {
+   "key": "itemdraw",
+   "file": "build/itemdraw_fixture.json",
+   "required": false,
+   "note": "M7.7-I2 the item unpack $8779, the ink $8728 and the opaque 16x16 blit $A2C2/$A2D5: 1032 unpack rows over both passes and 96 draw cases each run TWICE (destination seeded $00 and $FF) because opaque and OR agree over empty sky (test-only)",
+   "ship": false
+  },
+  {
+   "key": "itemscan",
+   "file": "build/itemscan_fixture.json",
+   "required": false,
+   "note": "M7.7-I1 the ITEM BLOCK $9603..$9642 (one 64-byte allocation, 32 slots x 2 bytes, slot 0 = the single power-up slot), the $8C5E per-round clear/decode swept over all 81 rounds, and the $8689 two-pass walk captured as a visit ORDER by trapping $86A9 with $86B1 poked to RET (test-only)",
+   "ship": false
+  },
+  {
+   "key": "advance",
+   "file": "build/advance_fixture.json",
+   "required": false,
+   "note": "M7.7-c the ROUND ADVANCE $97F8 and the $9AC1 nineteen-address reset: 53 direct calls bracketed by the ADDRESS reached rather than by sentinels, sweeping the three milestones, the past-81 wrap, the RETURN_ROUND draw at $9811 that had never been observed executing, and the sixteen-row warp truth table (test-only)",
+   "ship": false
+  },
+  {
+   "key": "clear",
+   "file": "build/clear_fixture.json",
+   "required": false,
+   "note": "M7.7-b the LEVEL-CLEAR decision $8E3A and the tally $8EAA: 61 direct calls (the note said 58 from M7.7-b on; the fixture has always held 61) capturing the Z FLAG -- the first oracle here that reads a register rather than RAM, because the main loop's answer at $8D61 JR z is a flag and not a memory cell (test-only)",
+   "ship": false
+  },
+  {
+   "key": "settle",
+   "file": "build/settle_fixture.json",
+   "required": false,
+   "note": "M7.7-a the ROUND-TRANSITION SETTLER $B520 and the $AA6E divert: 38 direct calls over a BUILT world (a captured round cannot gate it -- an ordinary fall is also (Y+2) on the same branch), plus six whole windows with a movement key held, three armed and three CONTROLS, because a player that was never asked to move is frozen either way (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubble",
+   "file": "build/bubble_sprites.json",
+   "required": true,
+   "note": "M7.5-viii bubble sprite tables $C780/$C900 (static tape data, 8 shifts x 48B); $D380 is NOT here -- it is built at runtime by $BF5B"
+  },
+  {
+   "key": "blit",
+   "file": "build/blit_fixture.json",
+   "required": false,
+   "note": "M7.2 blitter gate fixture (test-only)",
+   "ship": false
+  },
+  {
+   "key": "entdraw",
+   "file": "build/entdraw_fixture.json",
+   "required": false,
+   "note": "M7.3b ENTITY RENDER PASS oracle: 17 $A447 erase+draw calls and 8 whole $A3AD beam-chasing scheduler passes, every write in order with the display and shadow byte before each; M7.49: carry_calls -- $A447 CALLED on the UNCONTENDED harness with $A431 seeded so the erase add or the draw add sums exactly $100 (or the whole call exactly $FF): each call's T and every $A430 entry, so the +4 T a carry costs is witnessed at all four $A447 sites (test-only)",
+   "ship": false
+  },
+  {
+   "key": "score",
+   "file": "build/score_fixture.json",
+   "required": false,
+   "note": "M7 score point-table gate (test-only)",
+   "ship": false
+  },
+  {
+   "key": "isr",
+   "file": "build/isr_fixture.json",
+   "required": false,
+   "note": "M7.3 ISR dispatch gate (test-only)",
+   "ship": false
+  },
+  {
+   "key": "timing",
+   "file": "build/timing_fixture.json",
+   "required": false,
+   "note": "M7.3b spend(T) pass-count gate: per-frame (parity, passes) MEASURED from round1_48 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "isrcost",
+   "file": "build/isrcost_fixture.json",
+   "required": false,
+   "note": "M7.6-0 ISR COST oracle: 450 interrupts from five branch-checked 48K states, each half bracketed by control flow inside it; total - skeleton - parts == 0 on all 450, so the parts tile the whole (test-only)",
+   "ship": false
+  },
+  {
+   "key": "walk",
+   "file": "build/walk_fixture.json",
+   "required": false,
+   "note": "M7.4a player-walk gate: per-frame (dir $FD88, X/Y) under hold-RIGHT on round1_48 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "jump",
+   "file": "build/jump_fixture.json",
+   "required": false,
+   "note": "M7.4b player-jump gate: per-frame (dir $FD88, Y, air $FD89) under hold-JUMP on round1_48 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "leftwall",
+   "file": "build/leftwall_fixture.json",
+   "required": false,
+   "note": "M7.4c walk gate: LEFT from x=24 clamps at the $10 border (test-only)",
+   "ship": false
+  },
+  {
+   "key": "fall",
+   "file": "build/fall_fixture.json",
+   "required": false,
+   "note": "M7.4d fall-off-edge gate: jump onto the row-19 ledge, walk off it, free-fall, land on row 23 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "fallleft",
+   "file": "build/fallleft_fixture.json",
+   "required": false,
+   "note": "M7.4d fall-off-edge LEFT gate: overhang until no spanned cell has floor (full-width $AE81 probe) (test-only)",
+   "ship": false
+  },
+  {
+   "key": "blow",
+   "file": "build/blow_fixture.json",
+   "required": false,
+   "note": "M7.4d-ii BLOW gate: cadence $FDE0, debounce, pool spawn, travel, rise -- three scenarios (test-only)",
+   "ship": false
+  },
+  {
+   "key": "death",
+   "file": "build/death_fixture.json",
+   "required": false,
+   "note": "M7.4d-iii DEATH/RESPAWN gate: natural enemy-contact death, animation, lives-1, respawn + invulnerability, hurry reset (hit INJECTED in the engine) (test-only)",
+   "ship": false
+  },
+  {
+   "key": "twop",
+   "file": "build/twop_fixture.json",
+   "required": false,
+   "note": "M7.4d-iv TWO-PLAYER gate: P1 (keys) walks right while P2 (Kempston) walks left then jumps, 120f on round1_2p48 (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubwall",
+   "file": "build/bubwall_fixture.json",
+   "required": false,
+   "note": "M7.5-ii travel wall-stop gate: a bubble blown into the right wall stops at x=224 and rises ($BEAF) (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubpush",
+   "file": "build/bubpush_fixture.json",
+   "required": false,
+   "note": "M7.5-iii player-bubble contact ($B8E5): push (player shoves a risen bubble +-2/frame) + touch-pop (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubblock",
+   "file": "build/bubblock_fixture.json",
+   "required": false,
+   "note": "M7.5-v two-bubble OCCUPANCY MARKER + $B88D redirect gate: draws injected via rng.expect (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubsteal",
+   "file": "build/bubsteal_fixture.json",
+   "required": false,
+   "note": "M7.5-vi STEAL-OLDEST gate: full pool, the oldest bubble HOLDING so it must be skipped (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubdraw",
+   "file": "build/bubdraw_fixture.json",
+   "required": false,
+   "note": "M7.5-viii/ix byte-exact $B9E7 draw + $BF16 erase oracle: 35 draw cases and 17 erase cases, every write in ORDER with the display AND shadow byte before each address in the box, plus the $D380 build oracle (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bubage",
+   "file": "build/bubage_fixture.json",
+   "required": false,
+   "note": "M7.5-i bubble AGE + timeout POP gate: one blown bubble's +4 ageing (toggle $B657) and $B6D8 pop over its full life (test-only)",
+   "ship": false
+  },
+  {
+   "key": "join",
+   "file": "build/join_fixture.json",
+   "required": false,
+   "note": "M7.4d-iv P2 JOIN gate: '2' mid-game activates slot 1 with the $99C9 start init (joined INJECTED; the key decode is M7.8), 180f (test-only)",
+   "ship": false
+  },
+  {
+   "key": "airsteer",
+   "file": "build/airsteer_fixture.json",
+   "required": false,
+   "note": "M7.4c in-air-steering gate: JUMP+RIGHT, X (phase-gated $ADAA probe) + Y (arc) (test-only)",
+   "ship": false
+  },
+  {
+   "key": "bossdamage",
+   "file": "build/bossdamage_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "bossdeath2",
+   "file": "build/bossdeath2_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "endgame",
+   "file": "build/endgame_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "bossround",
+   "file": "build/bossround_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "attrpaint",
+   "file": "build/attrpaint_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "roundstart",
+   "file": "build/roundstart_fixture.json",
+   "ship": false
+  },
+  {
+   "key": "keyreader",
+   "file": "build/keyreader_fixture.json",
+   "ship": false,
+   "note": "KR1 (M7.44): the in-play key reader $ABF4..$ACEB and the Kempston branch $AEF5..$AF29, one row per ISR over twenty-three scenario runs (S1..S11, S7b, S13, S14; S4 in ten parts), both players' [d,f7,ph,cad,spr,x,y], the input applied and the key table seeded. tools/keyreader.py; a transliteration of the disassembly matches every read (1,307, 0 mismatches)."
+  },
+  {
+   "key": "popkill",
+   "file": "build/popkill_fixture.json",
+   "ship": false,
+   "note": "M7.45 THE POP KILL: tools/popkill.py, one row per ISR (entry $8D72 to past the RET $8DA1), the PRE and POST of a fixed RAM vector as diffs -- the display with the HUD bitmap MASKED (char rows 0..2 and columns 0,1,30,31, where the ROM-charset score, round number and EXTEND glyphs live; kept only as a per-row SHA-1, and every stored cell checked against the ROM charset), the sparkle and item tables, the colour shadow, $FD80..$FFFF, the key table, the wake delays and 44 named scalars (M7.48 added $90D0, the opcode the respawn flips, and $A3B2, the draw toggle; M7.49 $A431, the beam accumulator, bracketed at every $A430 call into facts, with the $A447 entries and adds outside the pass as erase/beam events) -- plus the ISR events (pops, $B775, forks, $B7A1 marks with ROM-window markers REDACTED, awards, the owner byte, corpse birth/tick/fall/land/draw, the click OUTs with T offsets), every LD A,R with site/A/tag, the ISR T and the main-loop passes. Scenarios: N1 round1_48 P1 blows to the round advance (3 kills, 3 landings, the clear), N2 round1_2p48 both players in, C4 P1/P2 swapped before the first touch (P2 paid), C1/C2 staged chains in RAM (owner P1/P2), C3 the ROM-window chain (the declared gap), N3 round1_2p48 both players blow, walk and jump (ISRs 0..1199; $B84C rewrites $B892, the operand of $B891; P2 pushes a risen bubble into a left wind -- $B952 CALL $BF0A erases it and $B971 keeps the wind), B1/B2 round1_48 two risen bubbles staged beside P1 with wind 6 / wind 0 -- the $B984 bounce ($B9AA CALL $ADAA shoves him, $B9B0 leaves $FD in his +8, and a later slot is pushed), B3 the same with wind 4 (the push nulls it, $B973), B4 round1_2p48 P2 walks left into a risen bubble (fourteen pushes across byte boundaries, each erased first), B5 P2 poked to Y 16 over a bubble in P1's bounce band (his $B901 tests the B/C that P1's left and touch-pops it), B6 the wind-2 bounce (P1 facing left, shoved RIGHT across a cell), B7 wind = B ($B985 returns at once), B8 P2 pushes into a RIGHT wind ($B973 nulls it), B9 P1 pushes and P2 at (16,16) pops at C = the wind code, B10..B14 the BC that $B9AA CALL $ADAA hands to P2's $B901 ($F800 after a cell crossing, right B10/B14 or left B13 -- P2 does not pop; B=2, C=(X+15)&$F8 B11 or C unchanged B12 inside the cell -- P2 pops); the events carry $B985 (wind, B), $B9AD (B, C) and the shove's X/Y/phase. M7.48, THE INTERLEAVE ($AA60 dispatches slots 0 and 1 to $AB38, the player routine, inside its slot loop): I1/I2 walking players with the enemies awake (their $AAC9 copy is the POST-move X+8/Y), I3/I10 the respawn CALM for P1/P2 ($ABB4/$ABBA flip $90D0 to $96 around $ABB7 CALL $90C1), I4/I11 the jump edge's $AD0C RES 4 (the jumper's own bit), I5/I6 the FAST WALK ($AAE6 runs $AB38 twice), I7/I8 the $AB0C tail after the move (I8: X $DF by the right wall -- the scene that separates after from before), I9/I12 a fast walker's final death (the second run moves a player who is OUT: $AB38 has no activity test), I13 a natural death doubled (respawn at ISR 186), I14 a fast walker blowing (two $ACAF OUTs per dispatch); the dispatch order is kept as counts in facts, and the events add ab38, calm, jumpedge, oddtail and blowout. Thirty-four claims asserted on the machine, among them every shove's BC against the $ADAA rule, among them direct calls of $B6C8 on a shadow, a RAM and a ROM target and at the bound ($3FFF, $4000, $7FFF, the store's HL recorded), the OR-draw checked from each cell's first write against the PRE display, and $B892 rewritten in N3."
+  },
+  {
+   "key": "itemage",
+   "file": "build/itemage_fixture.json",
+   "ship": false,
+   "note": "M7.45b THE ITEM AGE: tools/itemage.py.  $86CC..$86CF is LD A,n / AND n -- the item clock $86CD and the MASK $86CF, whose AND gates every item phase step.  MEASURED: $E6 $FF in the tape image, the live dump and all 56 shipped states with the game loaded (iball, a loader state, reported); ZERO writes to $86CE/$86CF by a write watch from the control select through the title, the game start and the round-1 build into play, and through N1's kills, clear and advance into round 2; $86CD is the tape $03 until play and is written only by $8688 INC (HL) and $8EDC (the clear).  And a DRIVE: round1_48, N1's keys to ISR 299 (the SEED: the pop-kill vector WITHOUT $86CE/$86CF, plus the item pass's scalars), then P1 walks RIGHT and the landed fruit in entry 2 persists 152 ISRs and is collected, paying P1, in row 452 (the main loop after ISR 451)."
+  },
+  {
+   "key": "rounddrain",
+   "file": "build/rounddrain_fixture.json",
+   "ship": false,
+   "note": "RA1..RA4: the round advance as MAIN-LINE T and an ISR ledger ($97F8..$8D0C): the title hand-off on gameover S0 (keys 1/2), 80 in-play $FECD advances per key plus 20/40/60 with the warp refused, the $AA60 bracket diverted/undiverted, and the per-(players, round) build/tail tables the engine spends"
+  },
+  {
+   "key": "roundbuild",
+   "file": "build/roundbuild_fixture.json",
+   "required": false,
+   "note": "M7.8-A the ROUND BUILDER $7F62 and its composition $7F1B: the executing closure, $81C3's two-pass ceiling, the ordered call trace, the $9603 code/data alias, $9858's B-dependent clear, the CLOSURE TEST that found the platform shadow is an input, and an 18-row oracle over (round, $82D7, $83EC) covering both record classes, both wall arms and all five tile indices (test-only)",
+   "ship": false
+  },
+  {
+   "key": "driftpainter",
+   "file": "build/drift_painter.json",
+   "required": true,
+   "note": "M7.8-C the drift painter's INPUT: the per-round rectangle stream $79AF..$7C22 (628 bytes, 82 entries, zero slack), its two stride tables LEN[16]/BODY[16], and the 15 door-pattern bytes $7E1A..$7E28 ($7E29 is the painter's own counter and pattern index 15 is never selected). 675 bytes of static tape data REPLACING the 15,552-byte captured output build/drift_field.json"
+  },
+  {
+   "key": "driftpaint",
+   "file": "build/driftpainter_fixture.json",
+   "required": false,
+   "note": "M7.8-C the drift painter ORACLE: the machine's own 81-round field with the ordered write census per round, the domain proof ($97F8 increments ($8609) before the round start so the painter never sees 0 or 82; at 0 it writes 141 cells over $FB02..$FFF0 and at 255 it writes 10,545 over $FB00..$FFF9), the pattern-index census and the static-block negatives (test-only)",
+   "ship": false
+  },
+  {
+   "key": "livespanel",
+   "file": "build/livespanel_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.10 the $806C LIVES ICONS oracle: the routine's measured input set (a read-watch minus its own code, the display it writes and the $E000..$FB00 SHADOW WINDOW -- the first version excluded everything from $E000 up, which is where the game's working RAM begins, so ($FD87), ($FD91), ($FDDC) and ($FDE6), the four addresses M7.10 exists for, were missing from its own input set; TRAPS #116), its ordered write log on three shipped states, and a 32-row sweep over both players x in-play/not x lives 0..7 -- 9 writes and one attribute cell per life, clamped at 5 by $809E, and ZERO writes for a player not in play ($8097 RET p) (test-only)"
+  },
+  {
+   "key": "release",
+   "file": "build/release_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.14 the $900B WAKE GATE and the $8C28 REVEAL: the heart arm ($FED0 non-zero rewrites all EIGHT wake-up delays $A891..$A898 to $64 every pass, zero leaves a poisoned table untouched), the cross arm ($901E DEC A / RET nz means EXACTLY 1 -- 0, 2 and $FF all decline), the SEVEN-BYTE proof ($9028's DJNZ runs with B=7, so with only $A898 non-zero the reveal STILL FIRES and with any of $A891..$A897 it does not), the reveal's measured CALL ORDER by single-stepping with a PC watch ($8216 -> $7F80 -> $957E -> $806C, $7F80 being in it because $8216 ends JP $7F80), its write census on three states (7,550 writes on round1_48: 5,632 display cells over 22 rows and all 704 attribute cells $5840..$5AFF), the four declining arms at ZERO writes each and the border (test-only)"
+  },
+  {
+   "key": "elemit",
+   "file": "build/elemit_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.22 the $7E80 ELEMENT EMITTER oracle: the four gates (element, the $8E3B clear latch, and ($8DBD) compared as an EIGHT-BIT load of a sixteen-bit counter -- $2A with a high byte of 1 emits just the same); the two OPERANDS swept over all sixteen element values ($7EFB the class into $7EF8's LD (IY+9),n, and $7EB2 the cap, 4 below element 5 and 1 above); the cap driven 0..6 live for both caps; the free-slot scan over every busy count 0..12 (and no HALT at all when none is free); *** THE RE-TEST AT $7EC4 *** driven both ways by taking the slot DURING the halt; the PUSHED return address at $7ECB proved by ($FEC5) going 0 then 1 on the SOLID refusal as well as the emit; the 0..3 position cycle and its four-entry table at $7F0B; and the slot record. ONE DECLARED SCAFFOLD: $7EC3's HALT is stepped over, which is also where the re-test is driven from (test-only)"
+  },
+  {
+   "key": "boris",
+   "file": "build/boris_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.21 the $917C BORIS CHASE oracle: the 500-frame wait past ($745C), driven either side; the SEVEN OPERANDS that are its entire state ($918B moving, $9194 the wrap counter, $919C the 0/1 toggle, $91BC the axis, $91DC the step countdown, $91E4 the 0..15 move length, $91D0 a dead self-modified compare) recorded as a 1,100-tick TRAJECTORY, which is what a state machine's fixture has to be; the discovery that a move starts only every FIVE HUNDRED AND TWELVE ticks (at 512 and 1025) while bit 7 of (IY+7) is set on tick ONE; the eight-pixel step and its sprite write on the X arm only; and the target OPERANDS steered at P1, P2 and a byte that is not a player at all. TWO DECLARED SCAFFOLDS: $91D4's HALT and the $A447 draw behind it are STEPPED OVER (with them off the machine sits at the HALT for ever, and with interrupts on the real ISR reaches the round advance and leaves the bracket at $9781), and the entry SP is pinned because arm() leaks ten bytes a tick -- the leak that, with the draw run, pushed arm()'s own sentinels over $9250 (the FE 02 FE 04 ... record M7.21 blamed on $A447 erasing at a garbage cached position; CORRECTED M7.49: with SP pinned the draw runs clean, cache as poked or not).  M7.49: phase (g), BEAM -- the cascade world with Boris's cache made sane (cosmetic: +7 bit 6 is clear, so the first draw erases nothing) and the draw RUN (only the HALT stepped over), a move armed before ticks 8, 30 and 52: every $91D6 CALL $A447's [X, cached X, cached Y, $A431 before, after] -- +8 on the first draw, +7 +8 after (his main-loop $A447 entry, which no per-ISR gate sees) (test-only)"
+  },
+  {
+   "key": "hurryfont",
+   "file": "build/hurryfont.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.20 the SUBSTITUTE 'HURRY UP !' letters -- a DECLARED DEPARTURE, and *** FROZEN BY M7.27: no longer regenerated, and tools/make_hurry.py is retired. ***  tools/make_banner.py covers these seven character codes with the SAME BYTES plus eight more, under a stricter assert (a minimum of three differing bytes rather than merely 'not identical') and reports the same per-string aggregate: 8 inked cells, 43 of 64 bytes differing, two blanks.  This file stays as THE RECORD OF WHAT M7.20 DREW so the suite can prove the font unification was pixel-neutral -- the row that compares BB_BANNER_FONT against it cell for cell is what will say so if the banner ever moves.  The first draft of the '!' was byte for byte the ROM's and make_hurry's own assert is what caught it (TRAPS #136).  No ROM byte appears in this file"
+  },
+  {
+   "key": "hurry",
+   "file": "build/hurry_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.19 the $9037 HURRY-UP oracle: the threshold at ($745C) shown to be LIVE STATE ($03E8 on the tape, $05DC on round1_48) and the compare driven either side of it; the three one-shot OPERANDS ($9049 disable, $904D fired, $90AA temper); the seven-write ISR-gate dance in order, four of them to $FEC4 and ending (1,1); the SPEAKER pulse train ($908D's $10 is BIT 4, not a border colour) as 126 OUTs of which 7 are edges over 1,622,170 T; the attribute FLASH ($995A is OR $40 / LD (HL),A / INC L / DJNZ, ten cells, and $9077 is an operand alternating the colour 3/6/3); the banner walker's shape ($9102 is a FOURTH opcode-as-mode-switch, $9A04 walks back from $FD2C to $FD00, $9904 runs 22 times and $9940 21 because the third call returns between them); the write census BY PC showing 1,680 of 3,900 come from the SPECTRUM ROM charset printer $802E/$804F, which this project does not ship; $90C1's temper with its stride-12-from-+5 walk; Boris's setup running TWICE so the target ALTERNATES (both players in play picks P1); the string 'HURRY UP !'; and the cost, 2,963,896 T against 31/91/205 for the three refusals (test-only)"
+  },
+  {
+   "key": "envkill",
+   "file": "build/envkill_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.18 the $931A ENVIRONMENT KILL oracle: $93C4, a SECOND opcode-as-mode-switch (the twin of $92DE -- $00 NOP corpses the entity, $C9 RET hands the matched attribute back to the caller) and LIVE STATE, $00 on round1_48/play1p48/hurryup and $C9 on r20_48/boss/elwater; the THREE probed cells found by read-watch (+$00, +$21, +$20) and poked one at a time, showing the first two answer to PAPER 5 AND to BRIGHT INK 2 while the third answers ONLY to the ink; all 256 attribute values through the probe as an enemy and as a player (46 corpse an enemy, 32 by paper and 14 by ink); the $937F CP $10 Y gate and the two entity bits; the player's tail measured over six worlds ($936A SET 4 is the WATER-CARRY bit, not a death, and bright ink leaves a player untouched); the $93B9 DEC L EIGHT-BIT WRAP, which at COLUMN 31 of rows 6, 14 and 22 reads offset 288 instead of 32; and a 5,632-position sweep proving the first cell is (Y>>3)*32 + (X>>3) (test-only)"
+  },
+  {
+   "key": "playerenemy",
+   "file": "build/playerenemy_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.17 the $925A PLAYER/ENEMY oracle: $92DE, an OPCODE that is a mode switch ($00 NOP = two lists, $C9 RET = one) whose two writers DISAGREE about what to leave behind ($925A leaves $C9, $BE5B leaves $00 -- each SETS BEFORE USE); the second list identified as BORIS at $9250, whose +7 is $9257, three bytes before $925A's own first instruction, filled in by $9121 inside the hurry-up code and cleared by $915F; the box test SWEPT over all 65,536 entity positions at THREE player positions (729 accept at (100,100) and (200,150), a 27x27 rectangle -- and ZERO at (250,250), because player+14 wraps to $08 in eight bits); the six arms each driven with the carry set BOTH ways, which finds the ONE that hands the caller its own flag back ($92BB's BIT 2 / RET nz); ($AA57)-2 = 0 meaning 256 passes, not none, because $9304's DEC A / JP nz tests after the body; $9280 OR A measured AT THE FLAG (carry 1 in, 0 out) as the reason P2 is not hit twice; and $927D's two arms over six worlds (test-only)"
+  },
+  {
+   "key": "giant",
+   "file": "build/giant_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.16 the $A824 GIANT OBJECT oracle: the once-a-frame gate that is an OPERAND ($A82C's CP n rewritten by $A82E -- four calls inside one frame write ONE byte each, the store itself, and move nothing; advance ($8DBD) and the next writes 235), the row walk measured one starting row at a time from a fresh machine (0 writes nothing at all, 1..12 and 17..18 advance, 19 does NOT because $A83B CP $14 jumps the store, 13..16 are the HIT rows, 20..23 clip off the bottom), the round gate, the body's measured CALL ORDER and write census on both states that carry a giant (fallcandy and peachfall, round 3 row $13), the three-byte award table at $A9EA indexed by the TYPE operand $A85C, and the $A9D5 POP that discards $A824's return address so a HIT NEVER ERASES -- a PC watch, because the reveal repaints over the evidence (test-only)"
+  },
+  {
+   "key": "jumpsfx",
+   "file": "build/jumpsfx_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.15 the $8FA5 JUMP TONE oracle: the 256-byte window at $B57D with every animation byte swept through the real routine, the eight arms (dying / not in play / phase $FF / phase $00 / P2 alone through the $8FAB FALL-THROUGH / both players / neither), the complete four-edge stream for every reachable E measured from $8FA5 (first edge at 211 T, or 219 when $8FCC NEG ran; half-periods 16E+10 and 16E+30), the DRIVEN domain (all forty keys held in turn -- exactly one, the digit 0, moves $FD89 off zero; held 200 frames it visits 26 values, the arc and both sentinels) and the pass cost, which composes exactly: two tones cost the silent floor plus both deltas (test-only)"
+  },
+  {
+   "key": "jumparc",
+   "file": "build/jumparc_fixture.json",
+   "required": false,
+   "note": "M7.33 the $AD65 JUMP-ARC oracle -- the arc MOVER, not tools/jumpsfx.py's $8FA5 TONE, which reads the same $B57D table with a DIFFERENT index base ($8FC5 by PHASE, $AD7C by PHASE-1). Nothing drove the mover before this. *** IT EXISTS BECAUSE THE PORT HAD THE DESCENT PROBE'S GATE BACKWARDS: *** the port tested `dy > 0`, first true at phase 19, and the machine tests $AD7D `CP $10` on A -- which $AD6D `INC A` has already made the NEW phase and $AD74 has already STORED -- so it probes from OLD PHASE >= 15. Phases 15..18 are exactly the table's ZERO-DELTA entries, so the port skipped the probe on four phases the machine takes it on. MEASURED with floor on the probe row against a cleared control, on two 48K captures: diverging phases [15,16,17,18], and `newphase>=16` predicts every row where `dy>0` predicts four wrongly. REACHABLE -- any short hop whose apex has floor 16px below -- and the image's own self-mod residue ($ADA1) = $B58B is index 14, phase 15, so the last descent probe the real machine ran was a zero-delta one. ALSO: TWO bottom wraps that are not the same wrap ($AD88 CP $C0 -> Y:=0 on the plain step, $AD5D CP $BF -> Y:=2 in the free-fall tail), neither previously modelled; PHASE 0 unreachable because $ACF7 `JP nz` guards it and $AD65 has ONE reference in 64K, but determinate INSIDE the routine because $AD6C `DEC L` decrements L alone and $AD77 `LD H,0` makes the index an UNSIGNED 255 -- landing on $B67C (= $FD = -3), NOT on $B57C the byte before the table, and $B67C is an OPCODE byte so it is static in every state; and the index is ONE FLAT unsigned byte with NO modulus, verified flat for phases 1..32 and for 33 and 40, so the port's old `(idx - 24) & 7` was a no-op over the reachable domain and wrong beyond it. No ROM byte: the game's own table and its own record.",
+   "ship": false
+  },
+  {
+   "key": "pausegate",
+   "file": "build/pausegate_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.13 the $8FE7 PAUSE oracle: ($8E0A) is $C9 RET on all four 48K states and $21 on the two 128K ones, so the 128K mute the routine appears to do is not in this branch at all; ALL FORTY KEYS swept through the real routine -- exactly one arms it (SYM SHIFT, half-row $7F bit 1) and exactly one frees it (CAPS SHIFT, half-row $FE bit 0); the complete arm-to-release write log (6 RAM writes, all six its own stack frame, ZERO to the world) with the border sequence 4 then 0; the four-PC busy wait $8FFB..$9000 with 0 of 49,152 world bytes changed over 4,000 steps and 0 ISR entries in 200,000 steps with interrupts ENABLED in the simulator; and the RESUME proof -- entered at $8D25 with SYM down the chain lands at $900B on release, not $8D25 and not $8FA5 (test-only)"
+  },
+  {
+   "key": "enemyfire",
+   "file": "build/enemyfire_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.23 the $9AEB ENEMY SPECIAL-MOVE SPAWNER oracle: the two gates driven ten calls each way (the $A37C frame detector with the clock held still and advancing, and the $9AF5 alternation operand walking 1111111111 against 1010101010); the $9B28 PRNG draw swept over 512 seeds until all EIGHT `AND 7` residues are reachable, armed at $FE85 and not at the CALL; the type gate swept over all sixteen values ($9B41 CP 1 / JR z / CP 5 / RET c); every eligibility refusal driven one poke at a time against a baseline that passes; *** the ($AA57) gate driven at INDEX 6, where it can actually bite -- counts 6/7/8 refuse and 9/10/12 pass, and 2 and 0 pass through the EIGHT-BIT `SUB 3` WRAP that 3 does not ***; the type-7 row-match exemption on all three of types 1, 7, 8 against same and different rows; the slot record byte for byte with the $9B52 SET 1 landing on the enemy's +7; (IY+4) against a poisoned slot on an accepted, a LATE-rejected and an EARLY-rejected draw; and the second slot $5B0A shown FILLED by a seed swept for a first draw of 0, alongside the mark that empties it and the active-slot jump to $9BB4. No scaffold: every phase runs the routine from $9AEB with interrupts off"
+  },
+  {
+   "key": "extenddone",
+   "file": "build/extenddone_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.24 the $948F EXTEND TRIGGER oracle: ($FED5) driven on $00/$01/$80/$FF with the zero row checked for writing NOTHING; the even ISR gate from both starting values; $94C2's `SUB $3F / RET nz` swept over all 256 values for BOTH players with the accepted case ABORTED at $94C8 and never executed, because past it the machine wipes $1AFF bytes of shadow and waits on an interrupt; *** the ($FECB) cap driven 0..7, where `CP 4` is an EQUALITY and the jump skips the STORE as well as $7E04 and $BF5B, so 3 stays 3 and 4 goes to 5 ***; the `JP $957E` tail proved by SP at the panel matching SP at the arm; the whole outer pass's 112 writes; and the two ROUND-START CALL SITES that were counted stubs for routines the port already had ($986F->$957E 204 writes, $98A7->$BF39 411) -- both measured with the targets POISONED, because on a plain round1_48 each writes ZERO and that is a measurement of the world, not of the routine. No scaffold: every phase runs from $948F with interrupts off"
+  },
+  {
+   "key": "extcomp",
+   "file": "build/extcomp_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.25 the $94C2 EXTEND COMPLETION oracle, measured on `extcomp` -- a real round-9 state already holding five of six letters, with the sixth poked in. The gate swept over all 256 values for BOTH players with the accepted case ABORTED one byte past the `RET nz`; the call census to $9553 (ten item passes, TWO $957E, TWO $806C, one each of $8C14/$801D/$994F/$8E05/$8E0A); *** the wipe as a CONTIGUOUS run of 6,912 zeros, $E000..$FAFF -- the display window PLUS the colour shadow, so shadowClear()'s 6,144 cannot be reused *** measured with the window poisoned, because an unpoisoned run reports the world and not the routine; the eight stride-two bytes at $856C; $8C14's nineteen RES 7 slots driven from $FF; the shower as 320 writes into 32 bytes ten times over, with the change count split BY WRITER PC ($951C 123, $9527 160) which refuted the guess that $8689 was writing them; the busy-wait over a 24-point (A,B) grid plus the two real sites read out of the REGISTERS ($9553 A=207 -- the banner's own attribute byte -- and $955E A=45 B=4); and one complete run: 17,162,734 T, 245.6 frames, the life award, 256 spins at $9561 and the exit at $8D09. One declared scaffold: most phases ABORT at $9553 so they do not execute two multi-million-T delays, and the delays are measured separately"
+  },
+  {
+   "key": "digits",
+   "file": "build/digits.json",
+   "required": false,
+   "note": "M7.32 the SUBSTITUTE DIGIT FONT -- a DECLARED DEPARTURE, and it had NO GATE AT ALL until this increment. $8042 computes $3C00 + (digit + $30)*8, the Spectrum ROM character set, and this project ships no ROM; tools/make_digits.py draws ten 8x8 cells for the port. The file has existed since 16 September, is byte-identical to the engine's BB_DIGITS, and was NOT REGISTERED HERE, so no check read it and the table could have drifted from its record silently -- which is the same class of blindness that let $7FAF write seven zeros per digit for weeks (TRAPS #173). *** AND THE ROW BUILT TO CATCH UNREAD FIXTURES COULD NOT SEE IT: *** that row iterates THIS asset list, so a fixture missing from the register is invisible to it by construction -- a guard over the register cannot find what is absent from the register, it has to enumerate the DIRECTORY (TRAPS #175). *** AND THE TOOL'S ASSERT WAS A WHOLE-CELL INEQUALITY: *** `rom[d] == DIGITS[d]`, which a digit differing from the ROM's in ONE byte of eight satisfies. Raised to a MINIMUM of 3 with per-glyph counts recorded as evidence, plus a duplicate-cell assert; all ten already cleared it, closest digit 6 and digit 8 at 5 of 8, so the claim tightened without redrawing a pixel. The ROM is read in the analysis harness for that comparison ONLY and no ROM byte reaches this file.",
+   "ship": false
+  },
+  {
+   "key": "bannerfont",
+   "file": "build/bannerfont.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.26/M7.28/M7.29/M7.31 the SUBSTITUTE BANNER FONT -- a DECLARED DEPARTURE, INDEXED BY CHARACTER CODE. $802E's $8044 builds every glyph address as $3C00 + 8*code, the Spectrum ROM character set, and this project ships no ROM; tools/make_banner.py draws THIRTY-ONE 8x8 cells covering the EIGHT strings the port prints through that routine ($9A06 ROUND, $9A11 READY, $9A1C HURRY UP !, $9A27 WELL DONE!, $9A95 GAME OVER, $9A9F PERFECT !, $9AA9 N I C E, $9AB8 CREDIT 6) plus every digit, since $94E7 writes '1'/'2' over $9AB3 and $7F94/$7FA6 write the round number over $9A0E/$9A0F. *** THE ASSERT IS A MINIMUM, NOT AN INEQUALITY: *** an inked glyph must differ from the ROM's cell in at least 3 of its eight bytes, because the first drafts of T, F, D and L managed ONE or TWO -- which satisfies 'not identical' and is not a different face (TRAPS #155). M7.31 added a second assert nothing had: NO TWO INKED GLYPHS MAY BE THE SAME EIGHT BYTES, which the ROM-diff comparison cannot see and which O/0 and V/W are the pairs most at risk of. The ROM is read in the analysis harness for that comparison ONLY and no ROM byte reaches this file."
+  },
+  {
+   "key": "banner",
+   "file": "build/banner_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.26 the $801D / $8058 DOUBLE-HEIGHT PRINTER oracle: the $803C mode operand driven on all three strings ($804F before, $8058 at every glyph call, $804F after); one glyph at double height as sixteen writes from eight source rows, two character cells $20 apart with each row written twice; the same glyph at single height for the contrast; all three strings' full destination traces; and the EIGHT-BIT `INC L` shown wrapping to column 0 of the same third by starting NICE at column 30. *** NOT ONE ROM BYTE IS RECORDED: *** every entry is a destination address and the SOURCE ADDRESS it came from, decoded to (code, row), so the structure is the machine's and the pixels come from the substitute font. One correction worth keeping: $8064's INC DE runs BEFORE the store at $8065/$8067, so DE at the double-height sites is one past the byte being written"
+  },
+  {
+   "key": "roundbanner",
+   "file": "build/roundbanner_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.28 the $98C4/$98D4 draw and $9904 painter oracle. *** $9904 RESTORES FROM THE SHADOW AND DERIVES THE ATTRIBUTES *** -- ten bytes by eight rows LDIRed back from display + $A000, then ten attribute cells rebuilt from bit 5 of the COLOUR shadow using ($8309)/($830A), the same derive $8C2B does over the whole screen. Measured at both call sites with the display POISONED and the shadow given a known pattern: 80 display writes and 10 attribute writes per call and nothing else. (The first run poisoned with $5A, which collides with the shadow pattern, and reported SEVENTY-NINE -- the missing byte already agreed.) Also: both rows' full destination traces, and *** IX RE-SEEDED EVERY PASS *** -- $98BD is inside the DJNZ loop, and $802E's own INC IX is what carries the pointer from 'ROUND    n' into 'READY    !' without the second address ever being named. No ROM byte: destinations and source ADDRESSES only"
+  },
+  {
+   "key": "bossbanner",
+   "file": "build/bossbanner_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.29 the $8E9D/$8EA7 boss-banner oracle -- the LAST $802E call site. *** ONE HL ADDRESSES BOTH RUNS AND THEY ARE DIFFERENT LENGTHS: *** $A090 turns the display address into its attribute address, $995A paints B cells there, and the SAME HL popped back at $8EA6 is where the glyphs go -- and $8E83 loads B with ELEVEN while 'WELL DONE!' is TEN characters, so the attribute run is one cell wider than the text it colours. Measured at the shipped $484B (11 cells $594B..$5955 all $C5, 80 glyph writes, IX left at $9A32) and at $48FA, where BOTH eight-bit `INC L` walks wrap independently -- the attributes inside page $59, the glyphs inside pages $48..$4F. $995A's `OR $40` is SWEPT over seven values rather than noted, because on the one attribute this site ships 'it ORs $40' and 'it writes $C5' are the same sentence: $85->$C5, $47->$47, $00->$40, $3F->$7F. No ROM byte: destinations and source ADDRESSES only"
+  },
+  {
+   "key": "creditline",
+   "file": "build/creditline_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.30 the $9751..$9764 CREDIT-line oracle. 'CREDIT 6' from $9AB8 at $50F7 -- eight characters, 64 display writes -- then NINE attribute cells at $5AF7..$5AFF written as $45 ($975E loads 5, $995A ORs $40 in). *** THE NINTH CELL IS $5AFF, THE LAST CELL OF THE ATTRIBUTE FILE: *** the glyphs cover columns 23..30 and the run covers 23..31, so it fills the bottom row to the screen edge while the text stops one short -- the same asymmetry $8EA7 has. The font needed NOTHING NEW: C, R, E, D, I, T, space and 6 were already drawn for PERFECT, READY and the round number. ALSO A READING OF THE TABLE AT $9A85 for the front-end increment: IY walks it COLUMN-MAJOR (LD L,(IY) / LD H,(IY+4), four parallel arrays of four), IX is seeded once at $9A32 and $802E's own INC IX chains all four strings, and *** its four counts MATCH their lengths exactly (24/21/20/14) where the two hand-coded sites do not *** -- so the off-by-one belongs to the call sites and not to the printer. One declared bracket: $9751 is NOT a subroutine, it falls through into $9765's attribute scan, so the probe stops at $9765 rather than waiting for a RET. No ROM byte: destinations and source ADDRESSES only"
+  },
+  {
+   "key": "oneleft",
+   "file": "build/oneleft_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.50 THE ONE-ENEMY-LEFT ANGER: tools/oneleft.py.  $8EC9 CALL $90A9 -- the body the hurry-up falls into from $90A6: the $90AA latch (an LD A,n operand), $FEC4 closed around the $90C1 temper walk (SET 2 on +7, AND $F8 on +5, every enemy slot, dead ones included), both gates opened.  DIRECT: 42 built worlds, $8E3A at its own entry (28 walk, 9 return at a non-zero latch, 5 controls); SEQUENCE: six machine call sequences (the latch shared by both entries, the respawn's calm kept, the round reset clearing it); NATURAL: N1 (round1_48, pop-kill's N1 keys: the last bit-7 slot is a flying CORPSE, 249 calls, one walk that changes no table byte) and L1 (N1's keys cut at ISR 200: a LIVE survivor angered at ISR 352, +7 $E1 -> $E5, X 116 -> 112, 2 -> 4 px per odd ISR, calmed by the respawn at 392 and never angered again), with every $8E3A call as a DECISION row (PRE at $8E3A, POST at $8D61 -- the main-loop differential); CENSUS: a $90AA write watch over seven long natural runs -- the writers are $90AE and the round reset's $9855 and nothing else.  The vector is the item block, $FD80..$FFFF and named scalars: no ROM byte, no display byte (test-only)"
+  },
+  {
+   "key": "corpserepaint",
+   "file": "build/corpserepaint_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.51 $8C51, THE DYING ENEMY'S FINAL REPAINT: tools/corpserepaint.py.  $8BC2's CALL $8C51 runs $A447 with its erase/draw junction $A5D9 patched to RET -- the erase-only entry the capture's $BE92 runs: bit 7 clear or bit 3 set -> $A437 (BIT 5 / RET nz / SET 5 / DEC ($AA5F)); else SET 6, and a first visit or a cached Y of $C0 or more -> out; else the erase at the CACHED (+3,+2), aligned (+7 at $A485) or shifted (+20 at $A56A) by the CACHED X & 6.  DIRECT: $8BC2 and $8C51 called at their own entries, interrupts off, uncontended -- 32 built worlds in slot 4 of r20_48 and of firekill (both erase boxes filled with synthetic display and shadow patterns; every arm: live at cached X & 6 = 0/2/4/6 and odd, cached X apart from the current X both ways, first visit (at a cached Y of $C8 too: $A45A SETs bit 6 before $A464), cached Y $BF/$C0/$C8/$FF, the $01FF sentinel rows, the page wrap, $A431 carries, frozen and empty slots with bit 5 clear and set) and every enemy slot of r20_48, elfire and firekill as they stand: 170 calls.  KILL: the first natural environment kill of fbkill (ISR 11, shifted) and of elwater (ISR 576, aligned, $A431 carrying), $931A re-run from its entry with interrupts off; the vector is the attribute file, $FD80..$FDFF and named scalars.  CENSUS: every $8C56 entry on those runs and on 600 idle ISRs of ellight -- live kills through $93D0 and $9EFE (the elemental bolt: ellight ISRs 22 and 46); bit-3 ones through $B82B (a popped bubble's frozen enemy: elwater ISR 239) and through $9EFE again (the bolt hitting the corpse it made two ISRs earlier, +7 $AD -- $8BF3's $8C|dir with bit 5 set by the entity pass's own $A437: ellight ISRs 24, 48, 50 and 52); all with interrupts off, every bit-3 one with bit 5 set.  Per call: the display writes in order with the display and shadow bytes before them, the slot, $A431, $AA5F, $FE86/$FE87, both $FE85 draws, and $A447's own operand writes and the stack classified apart, every operand fetch checked against its write in the same call.  17 claims.  No ROM byte: the write watch starts at $4000, no natural erase touches a HUD cell, and every complete stored cell is checked against the ROM charset, which is never written out (test-only)"
+  },
+  {
+   "key": "beeper",
+   "file": "build/beeper_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.52 THE 48K BEEPER LAYER: tools/beeper.py.  Every OUT ($FE) the game's code holds, census'd statically (instruction boundaries back-decoded; $D000..$D2FF masked) and by executing PC. CHIRP: $8CB1 called directly for nine C ($28 -- the $881D operand -- and 1, 2, 5, $7F, $80, $81, $FF, 0, which reach the 8-bit SLA and the B = 0 DJNZ), every OUT [T, byte], uncontended; SITE: $881D both contention settings, and the contended chirp at eight frame phases (drift <= 26 T); NATURAL: a real collect in play (itemage.py's drive) -- ISR 452 lands between OUTs 23 and 24 and delays every later OUT by 1,892 T; STORM: $A09A primed, ($FECF) = 0..255, every OUT (T, PC, byte), the cost and the PRNG words, plus the contended cost of each tick class at eight phases; REVEAL: $8C28 on two worlds; PAUSE: a natural SYM/CAPS drive and the two OUT offsets exact; HURRY: $9037 on hurry.py's ready world both contention settings; CENSUS: every OUT PC over 1,500 frames of round1_48 play and the title -> '1' -> play path (which makes NONE); MENUCLICK: the control select's key click $F7D4..$F7E7 -- FORTY ROM BEEPER calls, 241 OUTs, 5.2 frames -- for front-end group 3.  The ROM is executed in the harness; no ROM byte is stored, only T offsets, PCs and port bytes (test-only)"
+  },
+  {
+   "key": "ctrlselect",
+   "file": "build/ctrlselect_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.53 FRONT-END GROUP 3, H-a: THE CONTROL-SELECT SCREEN $F5E7..$F663 -- tools/ctrlselect.py.  TAPE: the fourteen '@' strings $F893..$F97A, $F97B..$F987, the $FA81 RST $10 stream and the three self-modified bytes $F829/$F850/$F671 from build/image_tape.bin, boot.pkl equal at every one, and boot's CHARS $3C00 / BORDCR $07.  P1: boot.pkl at its own entry $F5BC to $F5F0 (the CLS done) and on to $F664 (the first key read), interrupts OFF and ON (byte-identical; IFF 0 at $F664), 28,489 instructions, 376,615 T at boot.pkl's own frame phase -- ctrlOpen's span $F5E7..$F5F0 182,450 T and ctrlPaint's $F5F8..$F664 194,099 T, swept over eight phases (179,000..189,617 and 190,914..194,159); every screen write in order -- CLS 6,912, rainbow 832 (address and value), Firebird 288 as (8 display, 1 attribute) x 32 (display writes as address, column and row, a plain store of the charset row checked and kept only as a boolean; attributes with their values), printer 1,888 as (address, code, source row) -- the seven $F80B calls with the skip counter each saw ($FF $00 $00 $01 $02 $03 $04), the variables, and the census outside the two files (game variables, 14 ROM system variables plus 2 channel-table bytes, the stack).  P2: player 2's pass after P1 took '2', '3', '4' and '1' (the redefine typed Q A N M Y), naturally driven, interrupts on: 118/107/104/80 characters, and each pass's CLS, rainbow and Firebird line equal to P1's store for store, display values included.  ROW21: $FA71 over row 21 poisoned with all 256 attribute values -- new = old AND $3F for every one -- a $FF display row stored over, not ORed, and the ROM print's glyphs taken from CHARS (moved to $3D00: code + 32 on all 256 writes; $3C01: rows straddling two cells).  PRINTER: $F80B driven directly -- the enable byte, '@' vs NUL, the dead load, the skip gate, column 32 reaching $5800/$5801, and the column add carrying into H ($50E0 + $28 draws at $5108) -- each probe with its full store address list -- and CHARS moved to $3D00 and $3C01 (every store's source CHARS + 8 x code + row, on and off the eight-byte grid).  CLS: $F709's BORDCR AND $F8 over $07/$FF/$5A/$C3, and its one OUT ($FE) of 0.  RELEASE: ENTER held 50 frames at $F5F0, no write.  SPLIT: title.pkl is the boundary (screen and $6200..$FFFF identical to the driven $F664, only LAST-K, FRAMES and the stack differ), the menu's key read writes no display byte, the redefine interleaves prints and reads, and $FAC3, on two paths (P1 '4' / P2 '3'; P1 '3' / P2 '1' with the redefine O P Z X Y) and the first at eight press phases: A $30, BC $075E, writes FRAMES, the KSTATE set holding the last key (+0/+1) and the stack, and takes 256 x 69,888 + 994 T less the frame phase at $F5C9.  SYSREADS: from P1's $F664 to $96B0 on two paths (P1 '4' / P2 '3'; P1 '1' with a redefine / P2 '2'), the first access to each of the 36 addresses the port does not model and every PC that reads one: 13 are read first, all 16 system variables are read and by no game PC; the 16 put back to boot's values at $F664 change nothing (P2's screen, $4000..$FFFF at $96B0, registers, T), and P_FLAG poisoned there moves 256 bytes of P2's screen.  No ROM byte: addresses, codes, source rows, attribute values, reader PCs and booleans only (test-only)"
+  },
+  {
+   "key": "hurryblock",
+   "file": "build/hurryblock_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.54 $9037's BLOCK, WRITE BY WRITE: tools/hurryblock.py.  DIRECT: $9037 on hurry.py's ready world, interrupts off, uncontended (a plain Simulator with fast_djnz/fast_ldir OFF, so an LDIR is stamped per iteration) and contended -- all 3,993 writes in order, classed E ($9910 LDIR, address only), A ($9932, value), R ($995C, value), G ($8052: address, CHARACTER CODE and GLYPH ROW, never the ROM byte), O (other RAM, value, PC), each stamped with its T from $9037's entry, and every event PC; the latched ($90AA = 1) tail, the temper's tail at ($AA57) = 2 (256 slots), 3, 5, 8, a world with bit 5 of the colour shadow flipped under every banner cell (8 T a cell), and the TWO-PLAYER world (round1_2p48: $913D's JR nz taken at both Boris setups, 101 T sooner after each, 2,950,892 T exact).  PHASES: the contended block at eight frame phases (+9,560..+14,326 T over exact).  NATURAL: the machine's own block from round1_48 + ready, interrupts ON, contended -- $9037 7,409 T into its frame, 42 ISRs all with ($FEC4) = ($FEC5) = 0, 447/452 T each and 488/493 lost by the main loop, every write's natural T, the events and the chain after the block with their frames (the reopen and $925A in frame 42), the RAM each ISR changes (the two counters and its own stack), and the main loop's reads of the counter bytes (two: $903D's, before any write).  HELDOUT: round1_2p48 at its own phase (40,542, 43 ISRs) and round1_48 entered 15,500 T later (22,909, a frame-boundary phase).  TAILISR: the interrupt placed D T after $90A3 in the tail, where the gates are open before the temper walk -- bubble 0 releasing slot 4 (D = 137..327: X 160, Y 64, +7 $A4, but the pre-interrupt X & $F8 for (309, 320]), a capture (+7 236, the bubble holding the index), an escape (X 96, +7 $A4) and a forced odd case.  FIRECLOCK: the fire comes at threshold + 1 when the machine's own interrupts count the clock up.  KEYS: SYM / CAPS+SPACE pressed at $9037 -- the pause and the BREAK both come in frame 42, after the block; released at the RET, nothing; no IN while both gates are shut (an odd interrupt in the tail would run the key reader) (test-only)"
+  },
+  {
+   "key": "bannertime",
+   "file": "build/bannertime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.56 $98B5's ROUND BANNER, WRITE BY WRITE: tools/bannertime.py.  DIRECT: the title hand-off (rounddrain's S0 world, key 1) stopped at $98B5, interrupts off -- EXACT (a plain Simulator, fast_djnz/fast_ldir OFF, no contention): 256 iterations 10,902 T apart from $98BC at 27, each writing the same 180 bytes at the same offsets (glyphs ($8052: address, CHARACTER CODE, GLYPH ROW -- never the ROM byte) at 232 + 500 c + 37 r and 5,659 + ..., attributes ($995C) at 5,144 + 31 i and 10,571 + ...), the erases ($9904) at 2,790,961 and 2,794,038 (LDIR 64 + 281 r + 21 i, attributes 2,414 + 67 i from each entry), $98F0 at 2,797,088, $8D0C at 2,797,128; the string's characters all moved (the same T); round 81 (the erases only, 6,250 T; contended 6,250..7,869 by phase); CONTENDED at eight frame phases (10,902..11,130 T an iteration, 2,831,060..2,833,234 in all).  NATURAL: the hand-off, keys 1 and 2, interrupts on, contended, $98B5 to $8D0C -- 48 / 49 ISRs all with ($FEC4, $FEC5) = (20, 42), every ISR's main-loop T, cost and parity, the main-line T of every $98BC and $9904, a RAM diff across every ISR (it changes NONE of the 472..483 addresses the banner's main line reads, and repaints NO banner cell), and the screen bytes the ISRs repaint elsewhere (the negative control).  INPLAY: $FECD := 6 after each hand-off, rounds 2..7 back to back -- the same records, (88, 42), 51..58 ISRs, 322..580 screen bytes repainted elsewhere, still no banner cell and no read byte.  Its natural main-line totals equal rounddrain.py's rows exactly (test-only)"
+  },
+  {
+   "key": "extendtime",
+   "file": "build/extendtime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.57 $94C2's EXTEND COMPLETION, WRITE BY WRITE: tools/extendtime.py.  DIRECT: $94C2 armed with IX on the player, interrupts off, EXACT (a plain Simulator, fast_djnz/fast_ldir off, no contention) on extcomp and SIXTEEN variants of it -- P2, rounds 23/45/67/81, the other player's letters (P1 and P2), two players, lives 0 and 7, player one out of play, fifteen world items with a type-10 (RNG-ink) power-up, the item tick (ageing and expiry), the flood, the storm.  Each run's hook TIMELINE (the port's routine entries with the machine's T), every routine instance's DIGEST (sha1 of address, value and T from its hook, a ROM glyph as its code and row, an R-register ink as r), and the instances stored write by write: all of base's but the wipe and the repaint, and each variant's that differ (one item pass); the registers at both $9573 waits; the operand patches the port does not write ($A2C3 $A2C6 $A2F1 $A2CE $A2D1 $A31A $A323 $A32A) counted and excluded.  CONTENDED: base at sixteen frame phases, interrupts off, the timeline.  NATURAL: extcomp with the sixth letter and ($FED5) poked, interrupts ON, $948F..$8D09 -- four free entry phases and sixteen forced at $948F -- the timeline in main-line T, every ISR's cost, gates and parity, the RAM each one changes against the block's reads (the premise: none), one run's every write in main-line T.  NO ROM BYTE IS STORED."
+  },
+  {
+   "key": "stormtime",
+   "file": "build/stormtime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.58 $A09A's STORM FLASH AND STRIKE TICKS, WRITE BY WRITE: tools/stormtime.py.  DIRECT: round1_48 with the storm armed, $A09A called with interrupts off, EXACT (a plain Simulator, fast_djnz/fast_ldir off, no contention): flash ticks ($FECF = $1F, $3F, $DF, four generator words) and the three strikes ($FC, $FD, $FE) -- each $A0E0 entry (337 + 29,088 k; 1,375), every $A0F0 store asserted against entry + (60, 7954, 18455)[run] + 41 i over runs of 192/256/256, the other writes, the OUTs, the end (116,567 / 30,316), the seed and the values' digest.  PHASES: flash and strike at sixteen frame phases, contended, interrupts off, every store's T.  NATURAL: interrupts on, contended, the storm armed two ticks early: seven free worlds and round1_48 / r50_48 forced at sixteen entry phases, flash and strike -- every store in main-line T, the OUTs, every interrupt (main-line T, wall cost, gates, parity), the seed, and the premise (the interrupts write and read no attribute byte, read no byte before the main line writes it, write none it reads after: 0 of 78 runs break it).  PAYLOAD (M7.60): $A0F5 on six ticks ($FECF = $EF, $F0, $FB, $FC, $FD, $FE), exact: DI, EI, IFF back after the RET, the 36 stores; and a contended sweep of the interrupt line over 200 offsets from $A09A, each taken or lost (lost at exactly 160..1287).  NO ROM BYTE IS STORED."
+  },
+  {
+   "key": "buildtime",
+   "file": "build/buildtime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.59 $97F8's ROUND BUILD, WRITE BY WRITE: tools/buildtime.py.  NATURAL: interrupts on, contended -- the title hand-off (keys 1 and 2, round 1) and rounds 2..81 built back to back with $FECD in sixteen chunks of ten from their own hand-offs ($8609 poked, the warp refused), 1P and 2P, and again with the build counter $83EC moved two tiles on: 322 advances, each with its routine marks in main-line T, every $840A step and $8447 push entry, every interrupt (gates, cost), the RAM the interrupts write against what the build reads (the premise: only the frame counters, but for the ENTRY WINDOW -- two advances entered at phase 69,841 run one interrupt gate-open), and two advances' every display write (run-length coded).  DIRECT: EXACT (a plain Simulator, fast_djnz/fast_ldir off, no contention), interrupts off, from the natural run's own machine at $97F8 on twelve worlds (rounds 1 both keys, 2, 11, 21, 51, 81, 2P round 2, lives 0 and 7, letters collected, player one out): the marks, the steps' and pushes' entries, and every display write of each routine as (offset, address) -- the separator row, a step (6,048) and a push (288) asserted identical everywhere, the repaint, the HUD (round 1), the lives and the letter panel.  NO VALUE IS STORED (the display carries the ROM-charset round digits)."
+  },
+  {
+   "key": "projectile",
+   "file": "build/projectile_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.55 THE PROJECTILES: tools/projectile.py.  $9BB4, the per-frame update of a live slot ($5B00/$5B0A), entered from $9B0B only.  DIRECT: 75 built worlds (r6_48 plus pokes), $9BB4 at its own entry, interrupts off, uncontended -- kind 1 the BOULDER (the delay phase in (IY+6) & 7: 1 -> 2 waits, 7 -> 0 unmarks the thrower at $9C43; $9D83, the bolt's third ADD A,A, NOPped for a 4-px step and restored from $9D82; EITHER cell solid releases it), 6 the BREATH (only BOTH cells), 5 the BOTTLE (no X bound, one reversal, home at its launch column), 7 the DROP (eight-bit fall, gone at $C0), 8 the player's FIREBALL (the 2x2 attribute rebuild through $9D4C, $9D5C/$9D8B patched to RET around $9C4B, the $42 paint; eight-bit INC E shown at row 7) and seven default values ((IY+8) := 0, the slot still live), both slots; the POST over a fixed vector AND the ordered write log; the contended cost of nine rows at eight frame phases.  HIT: $9D8B at its own entry, both players swept 33 x 33 (the kill set is exactly the projectile's 8 x 8 cell, +4 := $64) and 22 cases (bits 3/4/2 refuse, a player NOT IN PLAY is hit, both players hit, the RET patch).  FIREBALL (ported in M7.60): $9DE1 on 17 worlds (the request, both slots, the recycle of an enemy shot -- aligned and UNALIGNED -- the Y window $10..$B1, P2's bit 4, ($FEC5) written 0 then 1) and $9DD4.  NATURAL: five scenes, interrupts ON, contended -- N1 r6_48 boulders, N5 r50_48 bottles, N7 r60_48 drops, N8 fbkill (a live fireball: 13 $42 paints, 2 enemies corpsed by the colour), N6 r40_48 with four STAGED breaths -- every ISR's PRE/POST over the natural vector, the LD A,R draws of every ISR and main-loop span, the passes, the interrupted PC and chain entry, the events; and every $9AEB call that reached its body (PRE at $9AEB, POST at $8D5B).  Three of the seven natural kills hit the ABSENT player 2, parked at ($D8,$A8).  CENSUS: every reference to the routines and operands.  16 claims.  No ROM byte: the vectors start at $4000, the HUD bitmap cells (and the shadow under them) are masked, and every stored cell is scanned against the ROM charset, which is never written out (test-only)"
+  },
+  {
+   "key": "ctrlmenu",
+   "file": "build/ctrlmenu_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.5x FRONT-END GROUP 3, H-b: THE KEY READ $F7B3, THE MENU $F664, THE DISPATCH $F680, THE PRESETS AND THE BUILDER $F6DB -- tools/ctrlmenu.py.  The ROM's keyboard routine behind $F7B8's RST $38 measured as INPUT AND OUTPUT over key histories, never its code or tables: DECODE, 40 keys x {none, CAPS, SYM, CAPS+SYM} from both sets free on P1's world and P2's (identical) -- 118 emit, 56 accepted, each row kept as the game FILTER's verdict ('acc' + the code it passes, or 'rej'), the raw code only where the filter accepts it, and FREEZE vs NOKEY by a latch key's behaviour; PAIRS, all 780 pairs and 238 wider chords (703 pairs and every wider chord FREEZE: nothing changes); HISTORY, 23 named histories and a 3,000-scan random walk, every emission and both KSTATE sets after every scan (a set's key by NAME, its counts, the verdict on the code it repeats); FILTER, $F7BD over all 256 values.  MENU, naturally with interrupts on: 56 keys and chords at P1's menu (48 click, 8 reach the dispatch), P2's blocked options, the LATCH (a shift let go with the key down: no click for 20 frames, accepted a frame after a release), a key held through P2's paint (33 scans after 3 interrupts).  TEST, $F667 over 256 codes x 4 blocks.  DISPATCH, every arm's writes in order from $F674 with its entry state (P1 and P2, SINCLAIR twice).  BUILDER, $F6DB over 51 drives.  CLICK, the 241 OUTs uncontended (T offsets and port bytes), contended at 8 and 64 phases (a per-OUT slope), BORDCR over five values, interrupts landing at 64 phases.  TIMING, every path the frame layer charges, built on purpose, and the open/paint/click T at 64 phases with 16 held-out midpoints.  FRAMES, 12 key scripts from boot.pkl's own $F5BC, a sample at every frame boundary (key changes deferred past an in-flight scan: no torn reads).  No ROM byte: verdicts, key names, counts, T and port bytes only (test-only)"
+  },
+  {
+   "key": "redefine",
+   "file": "build/redefine_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.62 FRONT-END GROUP 3, H-c: THE REDEFINE SCREEN $F723..$F7B0 -- tools/redefine.py.  SCREEN: eleven drives from $F723 to the builder's RET on four worlds (P1 KEYBOARD, P2 KEYBOARD after P1 took 2, 3 or 4), interrupts OFF, each answer fed from its read's first scan to its accept: every screen write in order as runs by writer (the CLS [start, n], the rainbow (address, value), the printer (address, code, source row) -- no ROM byte), the prompts' $F80B calls, the marks' T, the non-click OUTs, the state before and after, the last value of every game byte written.  The loop ('N'), player 1's 'R', player 2's 'R' arming $F6A3 with the checksum failing and passing ($FA3F := 0, OUT 2), the armed checksum on a later answer, SPACE/ENTER/SYM symbols.  TIMING: the screen ($F723 -> $F748), the loop ($F7AA -> $F748) and the prompt ($F801 -> the next CALL $F7B3) at 64 phases with 16 held-out midpoints; the click with its echo at 64 phases per read; the exits and the builder by path at 64 phases (the stack is contended); PLAYER 2's PAINT after player 1's KEYBOARD ($F671 = $31) the same way.  FRAMES: five key scripts from boot.pkl's own $F5BC through the redefine screen, a sample at every frame boundary (test-only)"
+  },
+  {
+   "key": "loadspine",
+   "file": "build/loadspine_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.63 FRONT-END GROUP 3, H-d: THE LOAD SPINE $F5C6..$F5CF, THE 48K/128K PROBE $FAC3 AND THE HAND-OVER $F5CC..$970E -- tools/loadspine.py.  CLS: $F5C6 -> $F5C9 at 64 phases + 16 held-out midpoints, interrupts off, and the screen it leaves.  PROBE: 48 key scripts from $F5C6 (P1 '4', P2 '3', driven from title.pkl), interrupts on: every interrupt in the CLS and the probe as (T past its boundary, length with the 13-T acceptance), the KSTATE sets at $F5C6/$F5C9/$F5CC, BC, E, A, the leg, the T to $F5CC; 'A' held 1..40 frames (22 answers $30, 23 $80), twelve keys and chords, taps, four phases, eight random scripts, and the cheat armed ($FA3F a NOP) with and without A+D+G -- the game RAM it rewrites.  ISR: the ROM interrupt from the idle probe loop -- 117 single keys/shifts through new, 34 held, repeat and release, a new key in set 0, the full path, all 703 plain pairs and 338 wider chords.  COLD: $F5CC -> $8CCA at 64 phases + 16 midpoints.  HANDOVER: $F5CC -> $970E at 8 phases and on two paths: the T at each mark, the interrupts accepted, the key table the cold start copied, $8DB5..$8DBE at $970E.  No ROM byte: T, key names and counts, game-RAM bytes (test-only)"
+  },
+  {
+   "key": "loadpath",
+   "file": "build/loadpath_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.64 THE LOAD, WIRED -- tools/loadpath.py.  The whole load as ONE drive from boot.pkl's own $F5BC: player 1's pass, the redefine screen, player 2's pass, the black screen, the probe $FAC3 RUN (not skipped), the hand-over and 40 frames of the title, keys applied at each frame boundary.  Two scripts: KEYBOARD redefined O/P/SPACE/Q then SINCLAIR; CURSOR then KEMPSTON.  A sample at every boundary: [frame, stage, pass, border, CRC-32 of $4000..$5AFF]; the frame and T of each stage's first mark; the key table $B5FD..$B60C and the staging buffer.  No ROM byte: key names, labels, CRCs, T and game-RAM bytes (test-only)"
+  },
+  {
+   "key": "boltkill",
+   "file": "build/boltkill_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.65 THE LIGHTNING BOLT'S ENEMY KILL: tools/boltkill.py.  $9E90 called at its own entry (interrupts off, uncontended) on 153 built r20_48 worlds -- the bolt swept across one enemy's window in X and in Y, two enemies in the window (the LAST hit slot wins), dead, frozen, first-visit and CORPSE targets, the ($AA57) count at 3, 7 and 8, both eight-bit wraps, a hit the bounds then despawn, a P2 bolt, the halved stride, slot 1 -- and on every live bolt of 120 idle ISRs of ellight re-run from its entry (24 calls, 4 kills: ISRs 22 and 46 kill, 24 and 48 re-kill the corpse just made).  Per call: $FD00..$FDFF and named scalars before, the $9EDF record at $9ED0, the slot $8BC2 was handed, every non-display non-stack write after (the erase's, blit's and $A447's own operands listed apart, not modelled), display writes counted.  And $9F18, the comparator, for every bolt byte against every aligned enemy byte: 256 masks.  No ROM byte: the watch starts at $4000 (test-only)"
+  },
+  {
+   "key": "waterstream",
+   "file": "build/waterstream_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.66 THE WATER STREAM: tools/waterstream.py.  The arm $9460 -> $A15F at its own entry (interrupts off, uncontended) on elwater for every ($FFF7) byte at three rows and every ($FFF8) byte at three columns, R varied, and both refusals (1,539 arms); 40 CONTINUOUS runs -- one arm then $A159 until the stream stops -- on elwater's platforms from a 6 x 6 grid of pops and on built shadows (an open field, a row-0 corridor that walks the head left into the bitmap, a row-23 corridor off the right end, a one-cell pocket), the carry gates in every combination; and every $9460 / $A159 entry over 700 idle ISRs of elwater re-run from its entry (348 calls).  Per call: the pre-state ($FD00..$FDFF, $A259..$A26D, named scalars, the shadow $F7C0..$FC3F by reference into a table of distinct shadows), the R byte read at $A15F, every display write in order, every other non-stack write.  No ROM byte: the watch starts at $4000 and the oracle refuses any shadow read outside $F7C0..$FC3F (test-only)"
+  },
+  {
+   "key": "fireman",
+   "file": "build/fireman_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.67 THE FIRE ELEMENTAL: tools/fireman.py.  The arm $93FD at its own entry (interrupts off, uncontended) on elfire for every ($FFF7) byte at three Ys, every ($FFF8) byte at three Xs, and the refusal at three phase bytes (1,539 arms); the manager $9F63 at its own entry for every ($9F64) byte over a nine-flame row, every count 0..12 mid-burn and at the end, the flame row at the page edge, and the drop at every ($FDF4) and every ($FDF3) byte on elfire and on a built floor (1,366 calls); 59 CONTINUOUS runs -- one arm, then $9E50 every frame (class 4 forced, $8DBD stepped) until the fire is gone -- on elfire's platforms from a 4 x 4 grid of pops and on built shadows (a full floor, a gap and a wall at distance 1..5 each side, the columns at both edges, the left spread past column 0 on rows 0, 8 and 12, an open field, a solid spawn cell, the Y wrap through the table's ROM rows, an immediate landing, the X wrap, the bottom row); and every $93FD / $9F63 entry over 300 idle ISRs of elfire, 300 of firekill and 400 of elfire with a fire request poked in, re-run from its entry.  Per call: the pre-state (named scalars, $FD00..$FDFF, and by reference the shadow $F7C0..$FC3F, the backing store $E000..$F7FF and the code pages $A000..$A9FF, the code page's later entries as differences from its first), every display write in order, every other non-stack write.  No ROM byte: the watch starts at $4000 and no vector reaches below it (test-only)"
+  },
+  {
+   "key": "aa60cost",
+   "file": "build/aa60cost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.68 $AA60 SLOT BY SLOT: tools/aa60cost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, contended, under a key script (P1's O/P/Q/SPACE, 25 frames a chord): each undiverted $AA60 bracketed by control flow -- the prologue, each slot $AA85 -> $AA85 (the last -> $8D8F), each handler RUN (entry to the doubled entry or $AAEC), each corpse flight $8A78 -> $AB03 -- and the skeleton = slot - runs - corpse.  rows: the passes whose skeletons include a (skeleton, runs) class not yet seen 3 times plus the first 2 of each state, with their seed ($FD80 table, $A891 delays, $AA57, $AA65, the $B54E list) and each slot's ten bytes at $AA99 and $AB0C.  runs / corpse: every run's T by handler, every flight's T.  diverted: every diverted pass of an UNcontended re-run, seed and T (test-only)"
+  },
+  {
+   "key": "ab38cost",
+   "file": "build/ab38cost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.69 THE PLAYER HANDLER $AB38, RUN BY RUN: tools/ab38cost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under its own key script (ACTIONS, 25 frames each, both players pressing through their OWN tables at $B5FD/$B605 -- left, right, jump, blow -- the Kempston bits for a $1F table), plus 17 FORCED runs of 100 frames (declared, poked at load, some cells re-poked every frame: the final death at five erase classes, P2's respawn, round 80, six lives, a Kempston table, the bubble-jump, the fall tail's wrap, phase 33, the left ascent at a row edge with and without a gap above, the heart freeze, a pop on a dead bubble, the probe above the HUD with $712F.. solid).  Per run: T (entry to return), slot, the keyboard rows and Kempston byte it saw, every byte it READ before writing (its seed, not the instruction's own bytes), every byte it WROTE at its final value (the stack excepted), and its branch targets.  Rows: up to 2 runs of each distinct natural path, up to 4 of each forced one (test-only)"
+  },
+  {
+   "key": "enemycost",
+   "file": "build/enemycost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.70 THE EIGHT ENEMY HANDLERS ($AF31..$AFF6, the walker $B028), RUN BY RUN: tools/enemycost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script (both players move, so the enemies chase).  Per run, from the handler's entry at $AAEA/$AAEB to its return: T, the handler, the slot, every byte it READ before writing (its seed), every byte it WROTE at its final value (the stack excepted), each LD A,R it executed (site, A) and its branch targets.  Rows: up to 2 runs of each distinct (handler, path) (test-only)"
+  },
+  {
+   "key": "corpsecost",
+   "file": "build/corpsecost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.72 THE CORPSE FLIGHT $8A78, RUN BY RUN: tools/corpsecost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, plus 10 declared FORCED CALLS ($8A78 called once from a poked round1_48 slot 2: the bob's wrap down, the fall's X clamp, the fall's timeout, the second probe row right and left, a full fruit table, the fall above the HUD, the odd / even / high erase).  Per run, from $8A78 to its return to $AB03: T, the slot, every byte it READ before writing (its seed, the PRNG's $FE86/$FE87 and the type generator's $8B9F/$8BA0/$8BA2 operands included), every byte it WROTE at its final value (the stack excepted) and its branch targets.  Rows: up to 2 runs of each distinct (path, T), 4 of each forced (test-only)"
+  },
+  {
+   "key": "mgrcost",
+   "file": "build/mgrcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.73 THE BUBBLE MANAGER $B62C, SLOT BY SLOT: tools/mgrcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script.  Every even pass bracketed by control flow and TILED: prologue + the blow arm $BD2C + twelve slots + RET.  Per slot, its path through the six branches $B644..$B669 and its skeleton T (the slot less its arms: travel $BDFE, held $B6C3, rise $B836, draw $B9E7, agepop $B6D8, escape $B679), with the bytes the skeleton read as it read them.  Rows: up to 2 slots of each distinct (path, skeleton, slot, flags); every arm run's T as a histogram and its median (test-only)"
+  },
+  {
+   "key": "blowcost",
+   "file": "build/blowcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.74 THE BLOW CHECK $BD2C, RUN BY RUN: tools/blowcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, plus 17 declared FORCED CALLS ($BD2C called once from round1_48 with the player blocks and the pool poked: the held-key request and its two refusals, dying, the debounce, fire mode, the +$61 == 15 bonus alone / with fire / for player 2, the lightning ability, both players, the scan to slot 11, and the full pool's steal over risen / travelling / holding bubbles and for both players).  Per run, from $BD2C to its return to $B636: T LESS its nested $B6D8 (the steal's pop) and $80FA (the bonus's award), those bracketed apart, every byte it READ before writing (its seed, the erase's $A431 operand included), every byte it WROTE at its final value (the stack excepted) and its branch targets.  Rows: up to 2 runs of each distinct (path, T), 4 of each forced (test-only)"
+  },
+  {
+   "key": "drawcost",
+   "file": "build/drawcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.75 THE BUBBLE DRAW $B9E7, RUN BY RUN: tools/drawcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, plus 46 declared FORCED CALLS ($B9E7 called once from round1_48 with slot 0 poked risen: each Y phase $40..$47 for each of the five sprite choices -- empty, element, holding, past $E6 with the $B62D toggle set and clear -- and the edges Y 0, Y 1, Y $B7, X $F0, and the age test's edge $E5 / $E6).  Per run, from $B9E7 to its return to $B656 at the caller's SP (the routine borrows SP): T, the bubble's Y and kind, the sprite choice's arms, every byte it READ before writing (its seed: the sprite through SP, the shadow, the display), every byte it WROTE at its final value (its self-modified operands among them), ROM reads as addresses only and the bitmap writes of a run that read the ROM as addresses only, and its branch targets.  Rows: up to 2 runs of each distinct (path, T), every forced (test-only)"
+  },
+  {
+   "key": "risecost",
+   "file": "build/risecost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.76 THE BUBBLE RISE $B836, RUN BY RUN: tools/risecost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, plus 29 declared FORCED CALLS ($B836 called once with slot 0 poked risen and the players poked: the drift's two Y wraps, the X clamp both ways, the blocked re-roll and its own wrap, a ROM marker pointer, every exit of the player contact -- inactive, dying, each overlap test failing, the touch pop facing either way and for player 2, the push in each wind and against both clamps, the bounce's six ends, both players on one bubble).  Per run, from $B836 to its return to $B653: T LESS its nested $BF0A (the push's erase) and $ADAA (the bounce's shove), those bracketed apart, its LD A,R values, every byte it READ before writing (its seed, the erase's $A431 operand included), every byte it WROTE at its final value (the stack and the ROM excepted), ROM reads as addresses only and its branch targets.  Rows: up to 2 runs of each distinct (path, T), every forced (test-only)"
+  },
+  {
+   "key": "popcost",
+   "file": "build/popcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.77 THE BUBBLE POP $B6D8, RUN BY RUN: tools/popcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, from its three callers ($B6C3 held, $B669 the age pop, $BDBC the blow's steal), plus 23 declared FORCED CALLS ($B6D8 called once from round1_48 with the pool, the burst table and the shadow window poked: not risen, unpaid, the burst table full, the Y cancel's four edges, classes 0 / 2 / 3 / 4 / 5 / 12 and 5 for player 2, the corpse on each $A447 arm, the mailbox busy, player 2, the chain window's refusals and marks, the window in ROM).  Per run, from $B6D8 to its return: T LESS its nested $BF0A (the erase), $8BC2 (the corpse birth) and $80FA (the award), those bracketed apart; the held arm whole ($B6C3 to $B66C); the T spent on $B7A1 calls from ROM cells (a figure, no ROM byte); every byte it READ before writing (its seed, the $A431 and $FE86/7 operands included), every byte it WROTE at its final value (the stack and the ROM excepted), ROM reads as addresses only, a ROM-reading run's bitmap writes as addresses only, and its branch targets.  Rows: up to 2 runs of each distinct (caller, path, T), every forced (test-only)"
+  },
+  {
+   "key": "escapecost",
+   "file": "build/escapecost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.78 THE BUBBLE ESCAPE $B679, RUN BY RUN: tools/escapecost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, every entry from $B664 (the class in A), plus 13 declared FORCED CALLS ($B679 entered once from round1_48 with the pool and the enemy table poked: an element bubble, a holding one short of the wrap, the wrap at each erase Y phase, enemy indexes 0 / 7 / 30, the marker cell in ROM, bit 2 clear, slot 5).  Per run, from $B679 to its jump to $B66C: T LESS its nested $BF0A (the erase), bracketed apart; the class; every byte it READ before writing (its seed, the $A431 operand included), every byte it WROTE at its final value (the stack and the ROM excepted), ROM reads as addresses only, a ROM-reading run's bitmap writes as addresses only, and its branch targets.  Rows: up to 2 runs of each distinct (path, T), every forced (test-only)"
+  },
+  {
+   "key": "travelcost",
+   "file": "build/travelcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.79 THE BUBBLE TRAVEL $BDFE, RUN BY RUN: tools/travelcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, every entry from $B648, plus 31 declared FORCED CALLS ($BDFE entered once from round1_48 with the pool, the enemy table and the colour shadow poked: each facing, X & 6 at $BEC4 and an odd X, ages 0 / 1 / 2, the range reached for each owner, each wall cell, a bubble born flush, the scan's refusals and a 256-slot walk, the capture at each erase class, index and owner).  Per run, from $BDFE to its jump to $B66C: T LESS its nested $BF16 erases, the captured enemy's $A447 and the jumped draw $B9E7, those bracketed apart; every byte it READ before writing (its seed, the $A431 operand and the $92DE opcode included), every byte it WROTE at its final value (the stack and the ROM excepted), ROM reads as addresses only, a ROM-reading run's bitmap writes as addresses only, and its branch targets.  Rows: up to 2 runs of each distinct (path, T), every forced (test-only)"
+  },
+  {
+   "key": "awardcost",
+   "file": "build/awardcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.80 THE SCORE AWARD $80FA, RUN BY RUN: tools/awardcost.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, UNcontended, under ab38cost's key script, every entry from the eleven CALL $80FA sites (a run an interrupt lands in counted, not kept), plus 25 declared FORCED CALLS ($80FA called once from round1_48 with A, HIGH / P1 / P2, the pending amount and the player guards poked: A >= 3, each guard out, the compare abandoned and copied at each step and all equal, every digit count, A = 0).  Per run, from $80FA to its return: T (nothing bracketed apart), the caller, A, every byte it READ before writing, every byte it WROTE at its final value (the stack, the ROM and the display bitmap excepted), the ROM read count, the bitmap writes as addresses only (the glyphs are the ROM charset's on the machine), and its branch targets.  Rows: up to 2 runs of each distinct (caller, path, T), every forced (test-only)"
+  },
+  {
+   "key": "hurryentry",
+   "file": "build/hurryentry_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.81 THE HURRY'S ENTRY WINDOW, SURVEYED: tools/hurryentry.py.  Every 48K saved state in build/ (48), 300 frames each, interrupts on, CONTENDED, under ab38cost's key script, the trigger held off by its own latch ($9049): every $9037 entry and accepted interrupt; per state the candidates (the first entry after each interrupt), their headroom to the next interrupt, the frames with no entry; a headroom histogram; and per state a FORCED fire on the closest candidate (the clock poked to the threshold at the interrupt before it): the T to $9052 / $9055 and every interrupt accepted between (with $FEC4 / $FEC5), and for a window case the bytes the gate-open interrupt changed that the block's main loop then read (address, before, after, the reading PC).  No ROM byte (test-only)"
+  },
+  {
+   "key": "floodtime",
+   "file": "build/floodtime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.83 $A09A's FLOOD TICK ($A127), WRITE BY WRITE: tools/floodtime.py.  DIRECT: round1_48 with the flood armed (($FECE) = every v in 1..255, the storm off, the edge primed), $A09A called with interrupts off, EXACT (a plain Simulator, fast_djnz/fast_ldir off, no contention): each tick's exit (row 171, ramping 27, payload 2, past 52, disarm 3), its end (1523 / 151 / 1327 / 163 / 126), every write but the stack's (T from the entry, address, value), $A0ED's entry (206), DI / EI / the open point (171 / 1317 / 1327), ($FECE) after.  PHASES: three row ticks and the payload at sixteen frame phases, contended, interrupts off.  SWEEP: the payload tick, contended, the interrupt line rising at 240 offsets, taken or lost (lost at exactly 168..1295).  NATURAL: interrupts on, contended, the flood armed two steps early, the row tick ($10) and the payload tick ($C7): seven free worlds, round1_48 and r50_48 at sixteen forced phases and eight straddling the interrupt -- every write in main-line T, every interrupt (main-line T, wall cost, gates, parity), lost interrupts, the pool's flags, and the premise (0 of 110 runs break it).  No ROM byte (test-only)"
+  },
+  {
+   "key": "popclick",
+   "file": "build/popclick_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.84 THE POP CLICK'S WIDTH, TAKEN APART: tools/popclick.py.  Every $B791 (speaker LOW) replayed to past $B79E's OUT (HIGH) twice from the same state, contended and uncontended, interrupts off: the 14 popkill scenarios that click (their ISR index `at` and pair `k`, every contended width asserted equal to popkill_fixture's) and the natural pops of awardcost's 48 states x 300 frames.  Per click: who, paid, the frame phase, the width (wc/wu, start to start), the edge width (ec/eu), the award's T (ac/au, $80FA entry to its return), the rest (bu = 71 on all 88) and the contention (res, in the award ra, outside rb).  T counts only, no ROM byte (test-only)"
+  },
+  {
+   "key": "buildentry",
+   "file": "build/buildentry_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.85 THE ROUND BUILD'S ENTRY WINDOW, SURVEYED: tools/buildentry.py.  The window is main-line T from $97F8 to $9855's store of the ISR's gate ($FEC4 odd, $FEC5 even) by path (plain, r81's LD A,R, the IX path of r20/r40/r60); buildtime's 322 natural advances replayed (rows equal buildtime_fixture's) with each entry's headroom and branch; 2 natural + 200 forced in-window runs (10 worlds x both branches) taken gate-open (the machine) against gate-closed (the port): the build's reads of the ISR's writes, display bytes and write order at $9887 and $8D0C, the addresses left different (addresses only), r81's LD A,R run.  No ROM byte (test-only)"
+  },
+  {
+   "key": "buildafter",
+   "file": "build/buildafter_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.85b THE ROUND BUILD'S IN-WINDOW INTERRUPT, FORWARD: tools/buildafter.py.  From each in-window case of buildentry (2 natural, 13 forced) the machine runs three ways for 1,500 frames after the first $8D0C with the same keys: A gate-open (the machine), B gate-closed (the port until M7.85b), B' = B with A's LD A,R values -- the first differing frame of display, sound and RAM, $B62D's readers ($B630, $B989, $BA0F), the odd branch's leftovers and the ISR counts.  Addresses and frames only, no ROM byte (test-only)"
+  },
+  {
+   "key": "respawncost",
+   "file": "build/respawncost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.91 THE RESPAWN AND THE INVULNERABILITY FLASH, RUN: tools/respawncost.py.  Five states x 1,700 frames, UNcontended, no keys (an enemy kills the player): 18 respawns (15 P1, 3 P2), 5 final deaths, 2,500+ ISR frames with +$5A bit 3 set; one FORCED run (P1 invulnerable with ($FED0)=1 held) for the frozen countdown.  Brackets: every $A447 call from the pass, the $ABDE countdown, $AB38's dying / respawn / final runs and the $806C lives panel -- T, branch outcomes, seed (bytes read before written), post (writes), segment T; ROM reads as addresses only.  Machine numbers only (nothing parsed from web/) (test-only)"
+  },
+  {
+   "key": "passcost",
+   "file": "build/passcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.87 THE MAIN LOOP'S PASS, $8D0C TO $8D0C: tools/passcost.py.  48 saved states x 300 frames, UNcontended, ab38cost's key script: every pass bracketed at the loop's own SP, interrupts and HALT waits taken out (recorded apart), each CALL from the loop bracketed from the callee's entry to its return (the CALL's 17 T in the skeleton), nested callees apart.  92,767 passes tiled exactly: the skeleton's T by path (one T per path: 479 / 486 / 455 / 96), each callee's T / own T / paths / children / share, the frame-long blocks apart, and seven example rows.  No memory values, so no ROM byte (test-only)"
+  },
+  {
+   "key": "cost931a",
+   "file": "build/cost931a_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.88 $931A, THE ENVIRONMENT KILL, RUN BY RUN: tools/cost931a.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $931A run from $8D55 (interrupts inside bracketed out), its own T, its path (walk length, branch outcomes), each nested $9377 probe (caller, mode, own T, path, $9F5C apart) and $8BC2 apart; 18 FORCED calls from round1_48 for the arms no natural run took.  Rows keep the run's seed (every byte read before written) and its writes; the instruction-sum model (W, P) predicts all 92,808 / 616,009 runs.  No ROM byte (test-only)"
+  },
+  {
+   "key": "revealentry",
+   "file": "build/revealentry_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.86 THE REVEAL $8C28 AT ITS FOUR OTHER ENTRIES: tools/revealentry.py.  $9032 (the cross's release, $9031 DI .. $8C4C EI; r50_48 / r10_48, the cross's handler $8883 called at $8D25 and free play to $9031), $A0BE (the storm's wrap; round1_48 / r50_48), $A9D7 (the giant's hit, natural; fallcandy / peachfall), $A11C (the umbrella's flash loop, forced at $88B1).  EXACT (plain Simulator, interrupts off): the T stamps from the entry's DI to the reveal's RET; for $9032 also the SEED -- every byte of $4000.. the run read before writing it, as [start, hex] runs, the addresses alone of its ROM reads -- and its write stream outside the stack (count, digest of address@T); M7.94: a SEED for $A0BE and $A9D7 too, the write stream split at the $8C28 entry (n_pre before it; count and digest of the rest with T from $8C28) and the giant's IX.  CONTENDED, interrupts on: the free run and sixteen forced phases 4,368 apart (the giant six more): every accepted interrupt, every DI window, every frame boundary and whether it was LOST, M7.57's rule on the measured window and on the BB_EXT_K model's.  T counts and addresses only, no ROM byte (test-only)"
+  },
+  {
+   "key": "revealcont",
+   "file": "build/revealcont_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.99c THE REVEAL'S CONTENTION, ACCESS BY ACCESS: tools/revealcont.py.  The reveal entered after a DI ($9031 on r50_48 / r10_48, revealentry.py's reach; $A11B, the umbrella's five reveals on its five runs, umbrella.py's) and four VARIANTS of the r50_48 source (the EXTEND masks, the lives counts, player 2 in play, a lives row over a paper already its ink: pokes at $9031 and the extra bytes the variant reads, >= $4000 only).  PROG: a plain run logging every access to $4000..$7FFF on the exact clock, split by routine (BB_RV_SCRIPT's hooks), offsets from each hook as count and digest; MACHINE: the CMIOSimulator, interrupts off, from the entry at its own phase and sixteen forced 4,368 apart -- every hook's contended T, the EI's end, the RET -- each EXACTLY the replay of PROG (the tool stops otherwise).  $7F80 alone for ($8609) = 0..100 and $957E alone for each player's 64 masks: count, digest, exact T.  T counts, offsets and digests only, no ROM byte (test-only)"
+  },
+  {
+   "key": "isrcarry",
+   "file": "build/isrcarry_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.99e THE INTERRUPTS-ON BLOCKS, MEASURED BEFORE A DESIGN: tools/isrcarry.py.  The blocks with ISRs inside (wrap $A0BE on round1_48 / r50_48, giant $A9B5 on fallcandy / peachfall, perfect $8F4C on lastdia81 / lastdia82 / r1_lead, the umbrella's head $88C0, extend $94C2 on extcomp) at their own phase and 16 forced (extend own + 4), 141 runs: the machine's main line is the plain run's, and the uncontended access program replayed from the entry's phase with the machine's ISR wall T at each acceptance gives every acceptance and the end exactly.  Each ISR: [main-line instruction index, accept T, wall T, its own delays, branch].  Since M7.108 the join $9961 (three worlds, a seed of what its run reads); M7.115e the potion $890D (round1_48, r50_48, round1_2p48, lastdia81 and the real load: own phase, 16 forced, a DI's 1..3 T straddles for $890D and $8C14, the head window's close at 32 / 31 T) with its seed, the plain run's marks and every write outside the reveal [T, address, value].  No ROM byte."
+  },
+  {
+   "key": "costc002",
+   "file": "build/costc002_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.90 $C002, THE BURST-SPARKLE WALK, RUN BY RUN: tools/costc002.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $C002 run from $8D49 (interrupts inside bracketed out), its own T, its path (one letter an iteration: free / erase z / erase e / draw / draw-C), C at entry and ($FECA), each nested $A2D5 / $A314 run (own, path, $9F5C apart); 14 FORCED calls (the borrow, the carry, the third band, Y = 0).  Rows keep the run's seed (every byte read before written, ROM values never) and its writes; the instruction-sum model (blocks, K) predicts all 92,798 natural runs and every nested one; 'contended' (contention off/on per state) and 'c_feca' (C against the tally's ($FECA)).  No ROM value (test-only)"
+  },
+  {
+   "key": "cost925a",
+   "file": "build/cost925a_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.89 $925A, THE PLAYER/ENEMY CONTACT, AND ITS SCAN $92BB, RUN BY RUN: tools/cost925a.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $925A run from $8D52 (interrupts inside bracketed out), its own T and path, each nested $92BB scan (own T, path) and $8BC2 / $80FA apart; 23 FORCED calls from round1_48 for the arms no natural run took (the refusals, the heart arm, Boris).  Rows keep the run's seed (every byte read before written, none below $4000) and its writes; the instruction-sum model (M, S) predicts all 92,798 natural runs and 94,539 scans.  'contended' (every state, contention off/on) and 'census' (round1_48's first 48 frames, the window BB_PASS_T was calibrated on).  No ROM byte (test-only)"
+  },
+  {
+   "key": "cost8fa5",
+   "file": "build/cost8fa5_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.93 $8FA5, THE JUMP TONE, RUN BY RUN: tools/cost8fa5.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $8FA5 run from $8D25 (interrupts inside bracketed out), its T, own and path, its one child $8FAE (P1's arm; P2's is $8FA5's own, the fall-through), the arms the STATE names (E: dying / out / falling / grounded / the tone's E, '-' the NEG); 74 FORCED calls (every arm for each player, every phase 1..32, the JP p arm on a poked table byte, both tones).  Rows keep the run's seed (every byte read before written, ROM values never) and its writes; the instruction-sum model (W) predicts all 92,790 natural runs and every forced one; 'contended' (contention off/on per state) and 'window' (round1_48's first 48 frames, off/on: the calibration's share).  No ROM value (test-only)"
+  },
+  {
+   "key": "giantspawn",
+   "file": "build/giantspawn_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.97 $A84D, THE GIANT-ITEM / BOSS SPAWN, RUN BY RUN: tools/giantspawn.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every natural $A84D run (candycane A = 1 and peachspawn A = 3 from $8F26 CALL $A84D, bossspawn A = 4 from $A9F9's tail jump), its T, A, return address, frame and writes; the saved states whose ($FECC) or ($A839) is set at load; 10 FORCED calls (A = 0..5, $11, $13, $80, $FF); two THROUGH runs (round1_48, the round cleared with ($FECC) = 1 / 3, the overlap pair poked to its decayed 00 00, no keys): the spawn, then ($A839)/($A8DB) at each of 400 frame boundaries and every $A824 body run.  The Zilog model (HEAD 150 + DIA 38 / FRUIT 62 / OTHER 67) predicts every run.  No ROM value (test-only)"
+  },
+  {
+   "key": "bosskillcost",
+   "file": "build/bosskillcost_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.99a THE BOSS TICK'S SPAWN ARM AND ITS KILL THROUGH $9298, RUN BY RUN: tools/bosskillcost.py.  'spawn': every natural $A9ED run on bossspawn (300 frames, UNcontended, ab38cost's key script) that took $A9F9 JP z,$A84D with A = 4, its T, own, seed and writes; 'heart': $A9ED called on boss / bosshit / bosskilled with ($FED0) poked (1 / $FF), the divider's operands poked so the body runs and P1 or P2 glued into the boss's box at $AA2C -- $AA35 JP $927D takes $9298 with HL = $A9AF ($A969's pushed SCF / RET), IY = $A9A8: the corpse is born over code; T, own, kids, HL / DE / IX / IY, seed, writes; 'control': the same worlds with ($FED0) = 0 (the carried refusal); 'after': boss, the natural kill, then the first execution of a byte it wrote (frame, PC).  The arm's Zilog sums (9281t 122, 92ADt 59, 92ADf 58, 92BAx 10) predict every heart run.  No ROM value (test-only)"
+  },
+  {
+   "key": "cost8e3a",
+   "file": "build/cost8e3a_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.93 $8E3A, THE LEVEL-CLEAR DECISION, RUN BY RUN: tools/cost8e3a.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $8E3A run from $8D5E (interrupts inside bracketed out), its T, own and path, each nested $8F94 / $90A9 / $90C1 / $A84D (own, path); runs longer than a frame are BLOCKS (the boss death, the treasure room's PERFECT draw), labelled, their children aggregated, not modelled; 16 FORCED calls (the countdown's ends, the tally's arms, the 256-slot walk, the boss alive, the treasure drain's non-block ends, both blocks).  Rows keep the run's seed (every byte read before written, ROM values never) and its writes; the instruction-sum model (W, CNT, ANG, WK) predicts all 92,796 non-block runs; 'contended' and 'window' as cost8fa5's.  No ROM value (test-only)"
+  },
+  {
+   "key": "cost8669",
+   "file": "build/cost8669_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.92 $8669, THE ITEM MANAGER, RUN BY RUN: tools/cost8669.py.  48 states x 300 frames, UNcontended, ab38cost's key script: every $8669 run from $8D4C (interrupts inside bracketed out), its own T, its path, every nested frame ($89CB $86A9 $86B1 $86E6 $8779 $87B2 $930A $9312 $876C $8765 $AEDC $A2D5 $A2FB $A34D $9F5C: entry, mode, own, path) and the labelled ones apart (the award $80FA, the chirp $8CB1, the power-up effects after $8838); 17 FORCED calls from round1_48.  Rows keep the run's seed (every byte read before written, the self-modified operands and opcodes as state, ROM values never) and its writes; the instruction-sum model (W) predicts all 92,770 runs and every nested frame; 'contended' (per state) and 'window' (round1_48's first 48 frames, idle, contention off/on, all runs and the 11-pass frames').  No ROM value (test-only)"
+  },
+  {
+   "key": "perfecttime",
+   "file": "build/perfecttime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.95 THE TREASURE ROOM'S AWARD AND \"PERFECT !\" BLOCK ($8F4C..$8F93) IN TIME: tools/perfecttime.py.  Worlds AT $8F4C: lastdia81 / lastdia82 (ab38cost's key script, uncontended, natural) and seven FORCED (round1_48 / round1_2p48 at $8D5E, the treasure flag set and the item table emptied, the tallies and scores poked: lead / tie / trail, the HIGH copy, eight-digit scores).  EXACT (plain Simulator, interrupts off) to the return at $8D61: the stamps (DI end, each $80FA call and return, EI end, $8F78, the iteration period, asserted the same for all 256), every write outside the stack with its instruction's start T -- the award's as [address, T] (addresses only: the digits are the ROM charset's), the first iteration's, the whole stream's count and digest -- and the SEED (bytes read before written; ROM addresses only).  CONTENDED, interrupts on (the natural worlds at their reach phase, sixteen phases 4,368 apart and four inside the award's DI window; r1_lead once): every accepted interrupt (T, ISR wall T, the two gates, the branch), the DI window, every frame boundary and whether it was LOST, the main-line T at the EI's end, $8F78, each iteration and the return, and what the ISRs inside wrote / read of the bytes the block writes.  T counts and addresses only, no ROM byte (test-only)"
+  },
+  {
+   "key": "umbrella",
+   "file": "build/umbrella_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.98 THE UMBRELLA'S $A110 BLOCK ($88C0 JP $A110 .. its RET): tools/umbrella.py.  Runs: the NATURAL collect on the umbrella world (the jump key held to $88B1, then released; ($FECD) the PRNG's 5) and FORCED at $8D25 ($88BD called with A = 3 / 5 / 7 and IX = player 1 on round1_48, 5 on r50_48).  EXACT (plain Simulator, interrupts off), each segment between two HALTs from its own start as the contended run reached it -- the head ($88C0 to the HALT at $A11A), five reveals ($A11B to $A120's HALT), four flashes ($A121 to $A11A's HALT), the end ($A121 to the RET's landing): its T, its stamps, its OUTs to $FE [T, value], every write outside the stack (a flash's as [address, T, d_address, d_T, n] runs and the one value, a reveal's as count and digest of address@T) and a reveal's SEED (bytes read before written; ROM addresses only).  CONTENDED, interrupts on, from $88C0 to the RET: every accepted interrupt [T, ISR wall T, PC], every HALT, every segment's start, every DI window, every frame boundary and whether it was LOST, the main-line OUTs; then on to the main loop's chain with ($FECD) = 0: each $97F8 entry and ($8609) there, the round it resumes on.  T counts and addresses only, no ROM byte (test-only)"
+  },
+  {
+   "key": "costsmall",
+   "file": "build/costsmall_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.96 THE MAIN LOOP'S FOURTEEN SMALL CALLEES, RUN BY RUN: tools/costsmall.py.  $8E2A $9961 $900B $8FE7 $9AEB $93DC $9E50 $A9ED $A824 $915F $948F $7E80 $9037 $A09A, each from its one main-loop call site; 48 states x 300 frames, UNcontended, ab38cost's key script (interrupts and HALT waits bracketed out), its T, own and path (decision events), every nested frame (entry, T); 62 FORCED calls.  Rows keep the run's seed (every byte read before written, the self-modified operands as state, ROM values never) and its writes; the instruction-sum model (blocks: S(entry) + E(event)) predicts all 1,453,955 natural root and nested frames and the 1,024 forced; 'contended' (per state) and 'window' (round1_48's first 48 frames, contention off/on, no keys and the key script: all runs, by passes a frame, the 11-pass frames) and 'window_world' (round1_48's toggles, edge operands and credits at the window's start: the census world's).  No ROM value (test-only)"
+  },
+  {
+   "key": "jointail",
+   "file": "build/jointail_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.99b THE JOIN'S TAIL AND BORIS'S ERASE, WRITE BY WRITE: tools/jointail.py.  $9961's join (16 natural runs: eight 1P states, '2' held from frame 2 / 5, 7 with an interrupt inside the tail, bracketed out; 12 forced: P1 / P2 joining, the other player's lives 0..7 and out, the panel's paper already its ink) and $915F with its request up (5 natural respawns under ab38cost's key script, 8 forced over Boris's Y & 7), UNcontended: every main-line write with the T of its instruction's start from the routine's entry, the marks ($7FC0 / $7FD7 / $806C / $7FE2 / $A314), the run's T and its seed (ROM addresses dropped).  The text and award glyphs' bitmap values are the ROM charset's: stored as -1 (test-only)"
+  },
+  {
+   "key": "cdstraddle",
+   "file": "build/cdstraddle_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.106 THE ROUND-CLEAR COUNTDOWN'S ADVANCE AND THE INTERRUPT INSIDE ITS PASS: tools/cdstraddle.py.  Five 48K worlds (round1_48, r6_48, r10_48, r20_48, r30_48), the round cleared (every walked enemy's +7 bit 7 cleared) 0..5 frames after the load, no keys, CONTENDED, interrupts on, run to $97F8: the boundary of the interrupt that made the timer $0177, its accept T and duration, the advancing pass's $8D0C, $8E3A, $8F29 / $8F2E (instruction starts) and the values read, the ISR T inside, the $97F8 entry, the previous (non-advancing) read.  T and timer values only (test-only)"
+  },
+  {
+   "key": "pausespin",
+   "file": "build/pausespin_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.107 THE PAUSE'S SPIN ON THE FRAME CLOCK: tools/pausespin.py.  Six 48K worlds (round1_48, r6_48, r10_48, r20_48, r30_48, boss), SYM from a frame boundary 1..6 frames after the load, CAPS from the first boundary after the spin + 0 / 1 / 3 frames; SYM+CAPS held together; FORCED runs with the arming $8FE7 moved 40..210 T before a boundary.  CONTENDED, interrupts on: the arming pass's $8D0C / $8D25 / $8FE7 / $8FF6 DI, the spin's head, the releasing poll's IN, the $900A RET's end, both OUT starts, the polls run, the ISRs from the pass, the next interrupt taken.  T only (test-only)"
+  },
+  {
+   "key": "ringtime",
+   "file": "build/ringtime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.109 THE TITLE'S SPARKLE RING ON THE FRAME CLOCK: tools/ringtime.py.  The real load (loadpath's kbd_sinclair drive) to its first $9765; there the phase, the attribute file, the PRNG, $FED3, $8DBD/$8DBE, $FEC4/$FEC5 and the ISR T before.  From that state: the natural phase and 21 forced, 30 frame boundaries each -- the ring iterations begun, the attributes' CRC-32, the PRNG and the PC the interrupt was taken after; every ISR's T; six presses ('1' / '2' at a boundary) to the arm, its frame and phase.  Attributes, game-RAM bytes, counts, T and CRCs (test-only)"
+  },
+  {
+   "key": "painttime",
+   "file": "build/painttime_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.110 THE TITLE'S PAINT IN TIME: tools/painttime.py.  The real load (loadpath's kbd_sinclair drive) to its first $970F; there the phase, the display file and attributes, the PRNG, $FED3, $8DBD/$8DBE, $FEC4/$FEC5 and the ISR T before.  The plain run $970F..$9765: instruction count, T, contended accesses, CRC-32 of PC:T:k per instruction.  From the $970F state: the natural phase and 18 forced, every frame boundary to 4 past $9765 -- the paint's main-line instructions done, the ring iterations begun, the CRC-32 of $4000..$5AFF, the PRNG; R at $9712, the arrival's boundary and phase, every ISR's T (each ISR's R step asserted 52 odd / 53 even).  Display bytes the load drew, game-RAM bytes, counts, T and CRCs (test-only)"
+  },
+  {
+   "key": "titleexit",
+   "file": "build/titleexit_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.111 THE TITLE'S EXIT IN TIME: tools/titleexit.py.  The real load (painttime's drive, the machine's paint) to its first $9765; there the phase, the bitmap with the strings' cells zeroed (their glyphs are the ROM's), the attributes, the cells' addresses, the PRNG, $FED3, $8DBD/$8DBE, $FEC4/$FEC5 and the ISR T before.  The plain runs of the arm ($979E / $9790 .. $97B6), a release pass ($97B7..$97BF) and the leave ($97C2..$8D09's CALL): count, T, contended accesses, CRC-32 of PC:T:k.  16 runs (key, press boundary, held frames, phase): every frame boundary to $97F8 -- ring iterations, release passes begun, the CRC-32s of the attributes and of the masked bitmap, the cut PC; marks [boundary, phase] at the arm, each $97B7 / $97C0, $97C2, $97F8; every ISR's T; the bytes the exit wrote at $97F8.  Game-RAM bytes, counts, T and CRCs (test-only)"
+  },
+  {
+   "key": "r1build",
+   "file": "build/r1build_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.112 THE ROUND-1 BUILD FROM THE TITLE, EXACT: tools/r1build.py.  titleexit's world and its 16 runs to $97F8, and two with the high score poked at $9765 (hi1 / hi2).  The plain run $97F8..$9887 per player count: every contended access (T from $97F8, T into its instruction), the marks, the two awards' T; the program with the awards' T taken out is the same in every run (digest), and its accesses outside the repaint's LDIRs as data (data_b64: k, then LEB128 steps).  Each run on the machine to $9887's HALT: every ISR [main-line T, T], the main-line T at the marks, $9887's frame and phase, the display writes' count and SHA-1 of address@main-line T, in all and per frame.  Access timings, counts, T and digests (test-only)"
+  },
+  {
+   "key": "r1tail",
+   "file": "build/r1tail_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.113 THE ROUND-1 TAIL AND BANNER FROM THE TITLE, EXACT: tools/r1tail.py.  titleexit's world and its 16 runs on through the round-1 build to $9888 (after the ISR that ends $9887's HALT: the HALT's phase, that ISR's T and own contention delay).  The plain run $9888..$8D0C: every contended access (T from $9888, T into its instruction) -- one program for every run (digest), shipped as data_lz (k + LEB128 steps, a byte LZ77) -- the marks, the two $9904 entries, the held writes' count and SHA-1 (the display and the gate stores at $98AF / $98B2, plain T), the banner's glyph cells (mask_b64).  Each run on the machine to $8D0C: every ISR [main-line T, T, own contention delay], the marks' main-line T, $8D0C's main-line T, frame and phase, the held writes' count and SHA-1 of address@main-line T, and at every ISR's end the CRC-32s of the attributes and the masked bitmap.  Access timings, counts, T and digests (test-only)"
+  },
+  {
+   "key": "passacc",
+   "file": "build/passacc_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.114a THE IN-PLAY PASS ON THE FRAME CLOCK: tools/passacc.py.  The real load (boot.pkl's $F5BC, the KEYBOARD menu drive and play, keys at each ISR's end -- the script embedded), frames 470..759: every main-loop pass ($8D0C to $8D0C) -- frame, wall phase, plain length, the number of contended accesses, their contention T, the SHA-1 of its access program (each access's plain offset from $8D0C and T into its instruction) and the ISRs inside it [plain offset, T]; every ISR's T from frame 380 (label = its boundary); the 30 access sites' counts; the 52 bytes the port reads that the tape leaves to play, at the first $8D0C (each asserted equal to build/image_tape.bin).  Asserted in the tool: every pass's contention is its program replayed from its phase with the ISRs' T at their points.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+  },
+  {
+   "key": "isracc",
+   "file": "build/isracc_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.114c THE ISRs' OWN CONTENTION: tools/isracc.py.  The real load (passacc's drive and script), every interrupt from frame 400 to 760: label (its boundary), acceptance phase, T from the acceptance to the return, contention delay D, the number of contended accesses and the SHA-1 of its access program (plain offset from the acceptance, T into the instruction), and per class (ent: $A447 from $A3AD's pass; bent: $A447 from elsewhere; in: the player handler's port reads; b5: the settler's $73A6 reads; bub: the even ISR's bubble blitters) count and SHA-1.  Asserted in the tool: D is the program replayed from the acceptance phase.  tmpl: $A447's erase / draw access templates per path and Y & 7 (offset from the entry, T into the instruction, row, column) from a round1_48 sweep, one per key (asserted).  Offsets, T, phases and digests (test-only)"
+  },
+  {
+   "key": "insgrid",
+   "file": "build/insgrid_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.114d THE INSTRUCTION GRID: tools/insgrid.py.  The real load (passacc's drive and script), every main-loop pass of frames 470..759: frame, wall phase, the number of main-line instructions and the SHA-1 of its grid (each instruction's plain offset from $8D0C and plain T, the ISRs bracketed out); every interrupt accepted inside a pass: label, the pass's index, the instruction it was taken after (index, plain offset, plain T) and the acceptance phase.  Asserted in the tool: the instructions tile each pass; each acceptance is at the end of an instruction begun before the boundary, or of the one after an EI.  Offsets, T, phases and digests (test-only)"
+  },
+  {
+   "key": "coldstart",
+   "file": "build/coldstart_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "PA4c THE COLD START'S ACCESS PROGRAM: tools/coldstart.py.  $F5CC -> $8CCA (interrupts off) from loadspine's p4p3 world: its plain T, its contended accesses' plain offsets from $F5CC (count, SHA-1, LEB128 steps packed by r1tail's byte LZ77), one program on p4p3, p2p2 and the real load (passacc's drive and script); asserted in the tool: the program replayed from the phase is the machine's T at 64 phases, 16 midpoints, 400 random phases and the real load's (frame, phase, T).  samples: 40 of the random phases with their T.  Offsets, T, phases and digests (test-only)"
+  },
+  {
+   "key": "lrstart",
+   "file": "build/lrstart_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.115 A LATER ROUND'S START, EXACT: tools/lrstart.py.  336 natural advances (rounddrain's hand-off, ($FECD) chunks of ten from every tenth round, keys 1 and 2, the tile counter as found and moved; the wrap past 81; lives 0 / 7, two letter panels, palette x tile pokes).  The plain run $97F8..$9887 and $9888..$8D0C split at the routine marks: every segment a function of the round and the player count, but four holes the engine models (the entry walk, the tile index JR, the lives panel, the letter panel: their lengths and programs per world) and wallPattern keyed by ($860C) and the tile pointer.  The distinct segments (plain T, accesses as k + LEB128 steps, the tail's instruction grid) in one byte-LZ77 stream; per round and player count the segment list.  Each run on the machine: every ISR (main-line T, T, own delay, acceptance phase, gates), the marks, $9887 / $8D0C frame and phase, the display / held writes' count and SHA-1.  Access timings, instruction lengths, counts, T and digests (test-only)"
+  },
+  {
+   "key": "lrfree",
+   "file": "build/lrfree_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.115c A LATER ROUND'S START FREE-RUNNING: tools/lrfree.py.  The real load (passacc's drive and keys) with ($FECD) poked at an ISR's end -- round 2 from five phases of round 1's play, rounds 10 / 41 / 81 by ($8609), three advances back to back, 81 and the wrap -- or at the $8D0C of a pass that meets the interrupt before $97F8 (two worlds).  From the poke to 60 frames into the new round: every ISR [label, T, own delay, acceptance phase], each advance's $97F8 / $9887 / $9888 / $8D0C [frame, phase], ($8609) at $9888, the wrap's LD A,R draw, the first frame of $7E80's long path, and the attributes' and the bitmap's CRC (the ROM font's cells out) at the end.  T, phases, CRCs (test-only)"
+  },
+  {
+   "key": "potion",
+   "file": "build/potion_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.115d THE POTION (type 12, $890D, the treasure room) THROUGH PLAY: tools/potion.py.  The real load (passacc's drive), a type-12 item laid under P1 at the end of ISR 600 / 700 and taken by the game's own item pass, then right / left alternately: every ISR's gates, P1's X / Y, ($FED1), the round and the live bubble slots; the take, the dispatch, the gate writes ($890F / $8912 shut, $8996 / $8999 open), the lost ISRs and the room's advance.  M7.115e 'fill': $8950's fill to its RET, plain, on every map build/treasure_fixture.json holds (seven rounds x both probe offsets, three built shadows): its T and every write [T, address, value].  Gates, positions, latches, frame / phase marks, T (test-only)"
+  },
+  {
+   "key": "itemacc",
+   "file": "build/itemacc_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "M7.115f THE ITEM PASS ($8669) ON THE PASS'S ACCESS PROGRAM AND ITS INSTRUCTION GRID: tools/itemacc.py capture | verify (~1 min on 20 workers).  The real load (passacc's drive; P / O after) with a potion laid at the end of ISR 600 / 700 (potion.py's worlds, to the room's advance) and eight items laid at ISR 600 (fruit:f600, to frame 1,300): every main-line pass from F - 2 [frame, wall phase, plain length, accesses, digest, ISRs inside] and every $8669 call [frame, phase, plain T, accesses (count, digest of 'o:k;' from the entry), instructions (count, digest of 'o:t;'), ISRs inside, the handler's window, the ISRs before the edge read], each chirp's 40 OUT starts [frame, phase]; seventeen saved states with items (and round1_2p48 with items laid under both players), 600 frames of random keys.  REPLAYS: the first call of each distinct (accesses, instructions) pair and every take, expiry, erase and dispatch, run again PLAIN from its entry (interrupts off, the counters advanced by the ISRs before the edge read): its seed (every byte >= $4000 read before written, the self-modified operands and opcodes), accesses and instructions to the handler's entry or the RET, T, marks and its LD A,R draws; `same` says whether the natural call took the same path (an ISR inside a walk can move what the rest reads).  FORCED: the flood ($FECE), the storm ($FECF) and P1 carried poked at a walk's entry.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+  },
+  {
+   "key": "tapereads",
+   "file": "build/tapereads_fixture.json",
+   "required": false,
+   "ship": false,
+   "note": "2026-10-10 THE TAPE'S BYTES THE GAME READS IN PLAY: tools/tapereads.py capture | verify (~6 min on 20 workers).  Every saved state but boot / title / iball, twice for 4,000 frames (random P1 keys; none), and r60_48 warped to rounds 1..81 for 1,500: every read of a byte >= $5B00 outside the shadow screen made before the run's first write to it, kept when no run writes that address at all (static) and its value is build/image_tape.bin's (in the eleven states built from build/image.bin only where the images agree) -- 'reads' [addr, value, kinds D/I/S, PCs, n states]; every write to a shipped block (named writers only: the $FB cells' bubble mark / clear and round 45's paint, $B7A1's chain mark on Boris's bank; 2026-10-11 the bounce's $AA43 on the boss's velocities, $79A5 on $79A2's seed); 'calls' -- the machine's own $A447 for Boris, $A2D5 for the bolt, $A04E for the fire, $A9C1 for the giant diamond.  2026-10-11 (the owner's boss bug) THE CENSUS: every address any run reads before writing (any value), with the machine's RAM there at the end of ISR 600 of the real load (passacc's drive) and the addresses where some run read the tape's value -- bb.test's TB2 holds the page's RAM to it.  bb.test's TR gates hold the engine's RAM in play to every read, and replay the calls"
+  },
+ {
+  "key": "straddle",
+  "file": "build/straddle_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115g THE CALLEE AN INTERRUPT FALLS INSIDE -- a census: tools/straddle.py capture | verify (~3 min on 20 workers).  itemacc's three real-load worlds and every 48K saved state (600 frames of random keys each): every chain CALL ($8D22 CALL z,$7FFC, $8D25..$8D5E) with exactly one ISR accepted inside it is a STRADDLE -- 27,087 of them -- replayed from the callee's entry plain and atomic: before (the counters' INC at the point, as ctrRead gives it: the engine's rule when the point falls inside), after (the ISR's changes laid over the entry: its cut at the entry or the edge read) and the exact cut (the ISR's changes at the machine's instruction: asserted = the natural call); and the ISR re-run LATE, with the callee's post-point writes laid over the point's state.  Rows [frame, callee, the ISR's plain offset, plain T, instructions, parity, the engine's rule, before, after, the ISR-changed bytes the callee read after it (and where), the edge read's offset, late]; for $8669 and $931A (M7.115g's sites) and $8FA5, $925A and $8E3A (M7.115h's) and $A9ED (M7.115j's) every row the old rule got wrong and every 40th of the rest ($8E3A's and $A9ED's every 10th; and every $A9ED row whose ISR run late writes otherwise) carry the natural grid (o:t to the RET or the handler's JP (HL)), the seed (bytes >= $4000 read before written, at their entry values; the self-modified operands the routine reads as instruction bytes: the item pass's, $8E3A's $8E3B / $8F3A / $90AA / $90D0, the boss tick's), the ISR's changes and the LD A,R draws; $A9ED's also the final byte at every address the call wrote or the ISR changed and, on a late row, what the ISR read of the call's writes as it read it, with the entry's byte.  M7.115h: round1_48's world also carries FORCED $8E3A replays (its first entry, poked: the one-left anger's first walk over one and four slots, the countdown's advance, the drain's band with an item left), plain and atomic to the RET -- each one's grid, T and seed.  Offsets, T, PCs, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "bossfree",
+  "file": "build/bossfree_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "2026-10-11 THE BOSS ON THE PAGE'S OWN PATH (the owner: 'the boss doesn't move and hitting it once with a lightning bolt kills it straight away'): tools/bossfree.py capture | verify (~20 s, three workers).  The real load (passacc's drive) with ($8609) = $4F and ($FECD) = 1 poked at the end of ISR 1000 -- round 80's setup, build, start, spawn and play: 'quiet' every body at $AA29 [frame, Y, X, dx, dy], the spawn's frame, the first $7E85, [L, ($9F62), ($79A3)] to the start; 'bolt' a bolt poked into slot $FDEE at the boss's (X, Y - 2) tile at ISR 1117: [L, ($9F62), bolt X, bolt +7] to 1161 and the hit frames; 'kill' the same with ($9F62) = 1: the death, round 81 and its start [L, ($8609), ($9F62), ($79A3)] to 1540.  bb.test's TB3..TB5.  Frames, positions and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "emitacc",
+  "file": "build/emitacc_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115i $7E80, THE ELEMENT EMITTER, ON THE PASS'S ACCESS PROGRAM: tools/emitacc.py capture | verify (~1 min on 20 workers).  The real load (passacc's drive) with ($8609) = round - 1 and ($FECD) = 1 poked at the end of ISR 1000 -- rounds 80 / 10 / 25 / 3 / 17 to frame 1700: every pass from 998 [frame, phase, plain length, accesses, digest, ISRs inside, the HALT's steps], every ISR [label, T, acceptance phase], the HALTing calls; eighteen saved states with an element, 600 frames of random keys.  Replays of each distinct call and every scan, plain from its entry ('a', to the HALT) and from $7EC4 after its ISR ('b'): seed, accesses and instructions (count + digest), T, marks; forced: no free slot, the clear's RET, the slot filled during the HALT, the emit point flipped; every HALT [start phase, steps, delays, acceptance phase].  bb.test's EA block.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "bossacc",
+  "file": "build/bossacc_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115j $A9ED, THE BOSS TICK, ON THE PASS'S ACCESS PROGRAM AND ITS GRID: tools/bossacc.py capture | verify (~30 s on 20 workers).  The real load (passacc's drive) with ($8609) = $4F and ($FECD) = 1 poked at the end of ISR 1000 (emitacc's r80) to frame 1700: every ISR from 998 [label, T, acceptance phase, digests of the bitmap and the attributes at its end]; six boss-round saved states, 600 frames of random keys.  Every $A9ED call [frame, phase, plain T, accesses, instructions, ISRs inside, marks]; replays of each distinct call plain from its entry: seed, accesses and instructions (count + digest), T, marks, writes (the final byte of each address written, the addresses as runs); forced from each world's first body (P2 over the boss, P1 over it, dying over it, beside it, the tape's SCF / RET pair, the sprite at $5B00, the box's corners) -- four of them with the machine's instruction list [pc, plain offset]; PHASED (r80): the body's entry moved into the bottom border so the point lands AT and 1 T into the erase's LDIs and attribute stores, the bounce, the draw's LDIs and LDDs, P1's reads, P1 beside the boss and over it, at both parities of the ISR -- the ISR's offset, T and phase, the call's grid, program and seed, its stores before the ISR, the ISR's changes, what it read of the bytes the call writes (the late class: those the call writes after it), the final bytes.  bb.test's BA block.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "sparkacc",
+  "file": "build/sparkacc_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115k $C002, THE BURST-SPARKLE WALK, ON THE PASS'S ACCESS PROGRAM AND ITS GRID: tools/sparkacc.py capture | verify (~2 min on 20 workers).  The real load (passacc's drive and keys, potion.py's P / O walk after them) with the table LAID at the end of every 4th ISR from 600 (six particles: three on P1's cells, three fixed, at six phases) to frame 1300: every pass from 598 [frame, phase, plain length, accesses, digest, ISRs inside], every ISR [label, T, acceptance phase, digests of the masked bitmap and the attributes at its end], every LD A,R; 48 saved states, 600 frames of random keys with SPACE.  Every LIVE $C002 call [frame, phase, plain T, accesses, instructions, ISRs inside, path, C]; replays of each distinct call plain from its entry: C, seed, accesses and instructions (count + digest), T, path, writes (the final byte of each address written, the addresses as runs); forced from the real world's first live call (every path in one walk, the LDI's borrow at C = 0, rows aimed at the ROM, the screen's edges, fourteen drawing, fourteen freeing) -- three with the machine's instruction list [pc, plain offset]; PHASED: that call's entry moved into the bottom border so the point lands AT and 1 T into the slots' reads, the LDI, the Y read, the write-backs, the blit's OR reads and stores, the restore's stores -- three particles on P1's cells and the odd ISR next ('over'), on a HELD bubble's cells and the even ISR next ('pop': its pop erases them and seeds the first free slot), every slot free ('pop0': the seed into slot 0) -- the ISR's offset, T, phase and parity, the call's grid, program, seed and C, its stores before the ISR, the ISR's changes, what it read of the bytes the call writes (the late class), the final bytes.  bb.test's SK block.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "borisacc",
+  "file": "build/borisacc_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115l $915F'S BORIS ERASE ON THE PASS'S ACCESS PROGRAM AND ITS GRID, AND ITS DI WINDOW ON THE FRAME CLOCK: tools/borisacc.py capture | verify (~40 s on 20 workers).  48 saved states, 600 frames of random keys: every $915F call with its request up ($9160 = 1: the respawn, the clear) [frame, phase, plain T, accesses, instructions, ISRs inside, the frames whose interrupt it lost, Boris's X / Y]; replays of each plain from its entry: seed ($9160 the operand among it), accesses and instructions (count + digest), T, marks, writes (the final byte of each address written, the addresses as runs; $A314's own operands left out); forced from the death world's first request (every Y & 7, the screen's edges, rows aimed at the ROM, the bottom) -- three with the machine's instruction list [pc, plain offset]; PHASED: that call's entry moved into the bottom border so the point lands AT and 1 T into the request's read, the DEC, the RET nz, the DI, the stores, the CALL, the restore's entry, its first and last rows, the EI, the RET, and 33 / 32 / 31 / 30 / 1 T before the RET's end -- Boris under P1 and the odd ISR next ('odd', 'odd3': Y & 7 = 3), the even ISR next ('even') -- the ISR's offset, T, phase and parity or LOST, the call's grid, program and seed, its stores before the ISR, the ISR's changes, what it read of the bytes the call writes (the late class), the final bytes.  bb.test's BK block.  Offsets, T, phases, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "popacc",
+  "file": "build/popacc_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M7.115m THE EVEN ISR'S LAST ACCESSES OFF ITS PROGRAM -- THE POP, THE ESCAPE'S AND THE PUSH'S ERASES, THE STEAL, THE BLOW'S BONUS AWARD: tools/popacc.py capture | verify (~40 s on 20 workers).  48 saved states, 600 frames of random keys with SPACE: every even ISR's $B62C (its entry 340 T after the acceptance, its RET to $8D8F) that runs a pop ($B6D8, by its caller), an escape's or a push's $BF0A, a steal or the bonus award [frame, the entry's offset, plain T, accesses, marks]; replays of each plain from its entry: seed (the self-modified operands fetched before written among it), the LD A,R draws, accesses (count + digest, the OUT ($FE)s' I/O cycles among them), T, marks, writes (the final byte of each address written, the addresses as runs); 49 FORCED calls on round1_48 / round1_2p48 with their proof marks (the pop at every Y & 7, the ROM's rows, the cancel's edges, the erase skipped, the seed's busy walk and slot 13, every class and the corpse birth's arms, the digits drawn and the HIGH copy, the guard, the mailbox, player 2, a chain, the age pop, the escape, the push both ways and player 2's, the steal unpaid and paid, the bonus for both players) -- each with its program in full [o, k].  bb.test's EV block.  Offsets, T, digests and game-RAM bytes (test-only)"
+ },
+ {
+  "key": "aybytes",
+  "file": "build/ay_engine.json",
+  "required": true,
+  "note": "M10.1 THE AY ENGINE'S BYTES (tools/extract_ayengine.py extract | verify, ~3 s): the tape's $E6A8..$F5BB, 3,860 bytes, which the cold start's 128K leg $96B3..$96D8 copies through the display file into bank 1 at $C350..$D263 -- the engine's data, code, state words and sound table.  Asserted equal to bank 1 after the game's own leg on the M10 machine (all 16K: the bytes at $C350, zero elsewhere) and that bank to the oracle fixture's (ayengine).  Read by web/game.js bbAyBytes; the JS engine BB_Ay runs over BB_Ay.bank1 of it (M10.1), the 128K leg lays it (M10.2)"
+ },
+ {
+  "key": "ayengine",
+  "file": "build/ayengine_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M10.0b THE AY ENGINE, DIRECT (tools/ayengine.py capture | verify, ~15 s): $D167 (the request) and $CF80 (the tick) called from a fresh bank 1 on the M10 machine -- the 48K harness with the paging port, bank 1 laid by the game's own cold-start leg -- 13 streams: sounds 0..7 (the request, then 3,000 ticks), 'none' (ticks with no request) and agent D's four seeded chains (60 requests each, mid-note, mid-loop, mid-mute). Events ['R', n, A, T, w] / [A, T, w] / k idle ticks, w = [reg, val, dt] with dt the OUT ($BFFD)'s first T from the entry; each stream's bank-1 SHA-1 at its end; '0' and 'none' stop at tick 256's ROM fetch [tick, pc, address].  Uncontended (the plain simulator at another phase identical) and the 128K's own machine identical in writes and A.  bb.test's AE block (M10.1, the JS engine's gate)"
+ },
+ {
+  "key": "cold128",
+  "file": "build/cold128_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M10.2a THE 128K COLD START'S ACCESS PROGRAM (tools/cold128.py capture | verify, ~30 s): $F5CC -> $8CCA on the M10 machine (the 48K harness with the paging port, the 128K load's 14 bytes, A = $80), interrupts off -- the cold start with its 128K leg $96B3..$96D8: its plain T, its contended accesses' plain offsets (the first LDIR's display writes and internal cycles, the second's display reads, each OUT ($7FFD)'s four I/O cycles: count, SHA-1, LEB128 steps packed by a byte LZ77), the leg's marks (plain offsets); asserted in the tool: one program on three worlds (the real load's probe at phase 1,051, the skip at 52,024, loadspine's p4p3 made M10), the replay the machine's T at 480 phases and each world's, bank 1 after the leg the asset's (aybytes) and the display's first 3,860 bytes the tape's.  Offsets, T, phases and digests (test-only).  bb.test's H block (M10.2a)"
+ },
+ {
+  "key": "ay128flow",
+  "file": "build/ay128flow_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M10.0c THE 128K BRANCH'S FLOW ON THE PORT'S CLOCK (tools/ay128flow.py capture | verify, ~5 min): the real load on the M10 machine (the 48K harness with the paging port and AY, the 128K load's 14 bytes, the probe forced to $80 at $FAE1), nine scenes (p1, p2, idle, skip, potion, heart, extend, boss, alive7) frame by frame -- the frames' sound state, every ISR (acceptance, T, the hook's T, ticked), tick, engine request, request ($8E0A: site, A, the current sound, IFF, T), wait ($8E05: busy byte, turns, its end), AY write and $7FFD write with its frame and T, the main loop's passes, LD A,R draws, beeper edges and the named marks; skip_sweep (the page's skip at 64 phases: the cold start's wait, request 5's and $970E's frames), di_window (a taken request's DI window at 179 forced offsets) and the hook's T per scene.  Moved from build/pending/ when its first gate landed (M10.2a, TRAPS #342).  T, phases, game-RAM bytes and the engine's AY writes (test-only).  bb.test's H block (M10.2a)"
+ },
+ {
+  "key": "pause128",
+  "file": "build/pause128_fixture.json",
+  "required": false,
+  "ship": false,
+  "note": "M10.2d THE 128K BRANCH'S PAUSE ON THE FRAME CLOCK (tools/pause128.py measure | verify, ~1 min): pausespin's runs on the M10 machine (the 48K harness with the paging port and AY), six worlds saved at the main loop's top from the flow's p1 (round 1, the theme) and boss (round 80, the boss theme) scenes -- the arm K = 0..5 frames on x 0 / 1 / 3 paused frames, SYM+CAPS together, and FORCED runs with the arming $8FE7 put 40..400 T before a boundary (the arm, request 0's DI window and its RET's end, the spin's DI) and, with CAPS, 100..1,000 T (the unpause's request across the boundary).  CONTENDED, interrupts on: the arming pass's $8D0C / $8D25 / $8FE7 / $8FF6 DI, the spin's head, the releasing poll's IN, $8D2B, both OUT ($FE) starts, the polls, the ISRs from the pass, the next interrupt and its acceptance; the two requests ($8FF3's 0 with the interrupts on, $9006's re-request with them off: entry, A, the sound then, IFF, DI, the RET's end), the engine's requests, the AY and $7FFD writes, the ticks.  And two scenes (pz: SYM at 741, CAPS at 749; pzb: SYM+CAPS at 741) on the real load, ay128flow's records.  T, phases, game-RAM bytes and the engine's AY writes (test-only).  bb.test's M10.2d block"
+ }
+ ],
+ "tape": {
+  "path": "tape/Bubble Bobble.tzx",
+  "deck": null,
+  "blocks": [],
+  "copies": [],
+  "prog": "0x5CCB",
+  "entry": "0xF5BC",
+  "sp": "0x61A7",
+  "tape_call_pc": null,
+  "tape_ret_pc": null
+ },
+ "z80": {
+  "contended": true,
+  "symbols": "tools/symbols.json",
+  "regions": "tools/regions.json",
+  "states": "build",
+  "image": "build/image.bin",
+  "snapshot": "build/boot48.z80",
+  "snapshot128": "build/boot128.z80",
+  "varmap": "tools/varmap.json"
+ },
+ "mutants": {
+  "cases": "scratchpad/battery/mutate7.py",
+  "suite": "test/bb.test.js",
+  "diagnostic": "BB_"
+ }
+}

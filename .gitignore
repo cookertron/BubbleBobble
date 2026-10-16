@@ -1,0 +1,45 @@
+# tape-derived material never goes in a public repository
+tape/
+*.tzx
+*.tap
+*.pkl
+build/*.bin
+build/*.pkl
+# local probe output
+*.ppm
+shot*.png
+# python / node
+__pycache__/
+*.pyc
+node_modules/
+# snapshots and dumps are tape-derived too
+*.z80
+*.szx
+*.sna
+build/blocks/
+build/frames/*.bin
+build/*.trace
+build/*.log
+build/*.png
+build/**/*.png
+build/sprites/
+build/rounds/
+build/*.mask
+build/walk.json
+build/live.bin
+web/bubble_bobble.html
+web/bubble_bobble_debug.html
+
+# real in-game snapshots (tape-derived)
+snapshots/
+# rendered game frames / sprite sheets (tape-derived art -- house rule 7)
+screenshots/
+*.png
+
+# scratch measurement scripts and their intermediates (session-local, regenerable;
+# some carry rendered shadow bytes, so they stay out under house rule 7)
+scratchpad/
+bubble-bobble-handover-*.zip
+# the kit mutation runner: worker trees and local state
+scratch/
+build/mutants/
